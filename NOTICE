@@ -1,0 +1,59 @@
+Baycone
+Copyright (c) 2026 Filip Klopec
+
+This product is licensed under the MIT License; see the accompanying LICENSE
+file for the full text.
+
+================================================================================
+Third-party components
+================================================================================
+
+Python dependencies
+-------------------
+
+Installed from PyPI and not redistributed as source in this project:
+
+  colorlog  — MIT License
+  PyYAML    — MIT License
+
+Components bundled in the Docker image
+--------------------------------------
+
+The Baycone container image bundles Debian packages that are NOT covered by the
+MIT License above and remain under their own terms — most notably:
+
+  ffmpeg / ffprobe and their libraries, which Debian builds with --enable-gpl
+  (including libx264 and libx265) and distributes under the GNU General Public
+  License, version 2 or later.
+
+Baycone invokes ffmpeg and ffprobe as external processes and does not link
+against them. The MIT License therefore covers Baycone's own code only; the
+image as a whole is a collection of separately licensed works.
+
+The license text of every bundled package is retained inside the image under
+/usr/share/doc/<package>/copyright.
+
+Written offer of source code
+----------------------------
+
+All bundled Debian packages are unmodified binary packages taken from the
+official Debian archive. Complete corresponding source code for the GPL-licensed
+components is made publicly available by Debian at:
+
+  https://sources.debian.org
+
+and can be retrieved for any bundled package with:
+
+  apt-get source <package>
+
+For example, to obtain the source of the ffmpeg build shipped in this image, run
+the following inside a container started from it:
+
+  apt-get update && apt-get source ffmpeg
+
+Patent notice
+-------------
+
+The bundled ffmpeg build includes AVC/H.264 and HEVC/H.265 encoders (libx264,
+libx265). Distributing or using those encoders may require patent licenses in
+some jurisdictions. This is independent of the copyright licenses above.

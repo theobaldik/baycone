@@ -1,0 +1,89 @@
+@startuml encoding_sequence
+
+title Encoding Sequence
+footer \nVersion 1.0
+
+skinparam style strictuml
+skinparam backgroundColor #FFFFFE
+
+participant "Encoder" as encoder
+participant "Analyzer" as analyzer
+participant "FileInfo" as file_info
+participant "ffmpeg" as cmd
+participant "FFmpeg / FFprobe" as proc
+
+activate encoder
+
+encoder -> analyzer : analyze(file_path)
+activate analyzer
+
+analyzer -> cmd : get_cmd_ffprobe(file_path)
+activate cmd
+cmd --> analyzer : cmd
+deactivate cmd
+
+analyzer -> proc : run ffprobe
+activate proc
+proc --> analyzer : streams, format (JSON)
+deactivate proc
+
+analyzer -> file_info : create
+activate file_info
+file_info -> file_info : resolve LocationConfig\nand SpecialDirs from path
+file_info --> analyzer : file_info
+deactivate file_info
+
+analyzer -> analyzer : flag shall_encode per\ncontainer / video / audio
+analyzer --> encoder : file_info
+deactivate analyzer
+
+alt shall encode
+    encoder -> cmd : get_cmd_encode_movie_pass_1(...)
+    activate cmd
+    cmd --> encoder : cmd
+    deactivate cmd
+    encoder -> proc : run 1st pass
+    activate proc
+    proc --> encoder : progress on pipe:1
+    deactivate proc
+
+    encoder -> cmd : get_cmd_encode_movie_pass_2(...)
+    activate cmd
+    cmd --> encoder : cmd
+    deactivate cmd
+    encoder -> proc : run 2nd pass
+    activate proc
+    proc --> encoder : encoded/<file>.mp4
+    deactivate proc
+
+    alt encoding failed
+        encoder -> encoder : _cleanup_workdirs()
+        note right
+            ""process()"" returns here - optimizing is skipped and the
+            original stays in place, so the next scan picks it up again.
+        end note
+        deactivate encoder
+    end
+end
+
+encoder -> cmd : get_cmd_optimize(source, processed, lang, track_name)
+activate cmd
+cmd --> encoder : cmd
+deactivate cmd
+
+encoder -> proc : run optimize
+activate proc
+proc --> encoder : _baycone_processed/<file>.mp4
+deactivate proc
+
+alt optimizing succeeded
+    encoder -> encoder : _archive_original()
+    note right
+        Moves the source to ""_baycone_originals/""
+        and prunes only the directories it left empty.
+    end note
+end
+
+encoder -> encoder : _cleanup_workdirs()
+
+@enduml

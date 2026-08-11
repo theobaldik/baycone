@@ -1,0 +1,76 @@
+@startuml processing_activity
+
+title Processing Activity
+footer Version 1.0
+
+start
+:Scan Watch Directory;
+note right
+    ""Path.rglob("*")"", skipping the
+    ""_baycone_*"" and "".baycone"" dirs.
+end note
+
+if (supported file found) then (yes)
+    if (file is locked) then (no)
+    else (yes)
+        note right: Size changed within 1 s - still being written.
+        :Skip file until next scan;
+        stop
+    endif
+else (no)
+    :Sleep ""poll_interval"";
+    stop
+endif
+
+:Analyze File;
+note right
+    ""ffprobe"" - container, codecs,
+    bitrates, channels, duration.
+end note
+
+if (container, codecs and bitrates within limits) then (no)
+    :Encode File 1<sup>st</sup> Pass;
+    note right: "".baycone/passlogfiles/<relative path>""
+    :Encode File 2<sup>nd</sup> Pass;
+    note right: "".baycone/encoded/<relative path>.mp4""
+
+    if (encoding succeeded) then (yes)
+    else (no)
+        :Log error;
+        :Clear Work Directories;
+        note right: Original is left in place for the next scan.
+        stop
+    endif
+else (yes)
+endif
+
+:Optimize File;
+note right
+    Remux with ""-c copy"", strip metadata,
+    tag the audio track and move the moov
+    atom to the front (""+faststart"").
+end note
+
+if (optimizing succeeded) then (yes)
+else (no)
+    :Log error;
+    :Clear Work Directories;
+    note right: Original is left in place for the next scan.
+    stop
+endif
+
+:Move Original to Originals;
+note right: ""_baycone_originals/<relative path>""
+
+:Remove Directories Left Empty;
+note right
+    Bottom-up, ""rmdir"" only.
+    Directories still holding files are kept.
+end note
+
+:Clear Work Directories;
+note right: passlogfiles/ and encoded/
+
+stop
+
+@enduml

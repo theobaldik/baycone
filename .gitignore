@@ -1,0 +1,10 @@
+.idea/
+.venv/
+dist/
+samples/*_optimized.mp4
+*.pyc
+*.pyd
+config.yml
+.claude/settings.local.json
+compose.override.yml
+compose.*.override.yml

@@ -1,0 +1,54 @@
+@startuml processing_sequence
+
+title Processing Sequence
+footer Version 1.0
+
+skinparam style strictuml
+
+participant "Service" as service
+participant "DirWatcher" as watcher
+participant "Config" as config
+participant "Encoder" as encoder
+
+activate service
+
+loop until stopped
+    loop for each watched location
+        service -> watcher : get_new_file()
+        activate watcher
+
+        watcher -> config : load_config_override(location_config)
+        activate config
+        config --> watcher : overrides applied
+        deactivate config
+
+        watcher -> watcher : rglob, skip special dirs,\nfilter by allowed_extensions
+
+        alt candidate found
+            watcher -> watcher : _is_file_locked(file)
+            alt file is locked
+                watcher --> service : None
+            else file is stable
+                watcher --> service : file_path
+            end
+        else nothing to do
+            watcher --> service : None
+        end
+        deactivate watcher
+
+        opt file_path returned
+            service -> encoder : process(file_path)
+            activate encoder
+            encoder -> encoder : analyze, encode,\noptimize, archive
+            note right: See encoding_sequence.puml
+            encoder --> service : done
+            deactivate encoder
+        end
+    end
+
+    service -> service : sleep(poll_interval)
+end
+
+deactivate service
+
+@enduml

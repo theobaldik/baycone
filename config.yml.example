@@ -1,0 +1,45 @@
+# Baycone configuration
+#
+# Copy this file to config.yml and point BAYCONE_CONFIG at it (the Docker image
+# expects it at /config/config.yml).
+#
+# Only 'locations' is mandatory - every other key falls back to the value shown here.
+# Each location inherits from 'defaults' and may override any of its fields individually.
+
+# Paths to the FFmpeg binaries. Bare names are looked up on PATH.
+ffmpeg_path: ffmpeg
+ffprobe_path: ffprobe
+
+# Seconds between directory scans.
+poll_interval: 5.0
+
+defaults:
+  # Only files with these extensions are picked up.
+  allowed_extensions: [ .mp4, .mkv, .avi, .m4v, .mov, .webm ]
+
+  # A file is left as-is when its container, codecs and bitrates are all within these.
+  allowed_containers: [ mp4 ]
+  allowed_video_codecs: [ h264 ]
+  allowed_audio_codecs: [ aac ]
+  limit_video_bitrate: 2800         # kbps
+  limit_audio_channel_bitrate: 96   # kbps per channel
+
+  # Output written when a file does have to be re-encoded.
+  target_extension: .mp4
+  target_container: mp4
+  target_video_codec: h264
+  target_video_bitrate: 2250        # kbps - never upscales above the source bitrate
+  target_audio_codec: aac
+  target_audio_channel_bitrate: 64  # kbps per channel, multiplied by the channel count
+
+  # Reserved: multitrack audio is not implemented yet, the output track is always tagged 'eng'.
+  target_audio_languages: [ eng, cze ]
+
+# Watched directories. Relative paths are resolved against BAYCONE_LOCATIONS.
+locations:
+  - path: movies
+
+  - path: tv-shows
+    # Any 'defaults' key can be overridden per location.
+    target_video_bitrate: 1800
+    limit_video_bitrate: 2200

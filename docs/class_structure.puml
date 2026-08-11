@@ -1,0 +1,164 @@
+@startuml class_structure
+
+title Class Structure
+footer Version 1.0
+
+skinparam style strictuml
+hide circle
+
+' Definitions
+
+class Service {
+    - _watchers : list<DirWatcher>
+    - _encoder : Encoder
+    - _stop_signal : bool
+    + start()
+    + stop()
+    + main_loop()
+}
+
+class DirWatcher {
+    - _dir_path : Path
+    - _location_config : LocationConfig
+    - _locked_files : set<Path>
+    + special_dirs : SpecialDirs
+    + get_new_file() : Path | None
+    - _is_file_locked(file_path : Path, interval : float) : bool
+}
+
+class Analyzer <<static>> {
+    + {static} analyze(file_path : Path) : FileInfo
+    - {static} _get_file_info(file_path : Path) : FileInfo
+    - {static} _get_ffprobe_result(file_path : Path) : dict | None
+}
+
+class Encoder {
+    - _processing_file : FileInfo
+    + process(file_path : Path)
+    - _encode() : bool
+    - _optimize(encoded : bool) : bool
+    - _archive_original()
+    - _cleanup_workdirs()
+    - _remove_empty_dirs(directory : Path, root_dir : Path)
+    - _log_progress(process : Popen, template : str)
+}
+
+class FileInfo {
+    + is_valid : bool
+    + shall_encode : bool
+    + duration : int
+    + containers : list<str>
+    + file_path : Path
+    + relative_path : Path
+    + passlog_path : Path
+    + encoding_path : Path
+    + original_path : Path
+    + processed_path : Path
+}
+
+class VideoStream <<dataclass>> {
+    + shall_encode : bool
+    + codec : str
+    + bitrate : int
+}
+
+class AudioStream <<dataclass>> {
+    + shall_encode : bool
+    + codec : str
+    + channel_bitrate : int
+    + channels : int
+    + lang : str
+    + title : str
+    + overall_bitrate : int
+    + generate_track_name() : str
+}
+
+class ffmpeg <<module>> {
+    + get_cmd_encode_movie_pass_1() : list<str>
+    + get_cmd_encode_movie_pass_2() : list<str>
+    + get_cmd_optimize() : list<str>
+    + get_cmd_ffprobe() : list<str>
+}
+
+class Config <<singleton>> {
+    + ffmpeg_path : str
+    + ffprobe_path : str
+    + poll_interval : float
+    + defaults : DefaultsConfig
+    + locations : list<LocationConfig>
+}
+
+class DefaultsConfig <<dataclass>> {
+    + allowed_extensions : list<str>
+    + allowed_containers : list<str>
+    + allowed_video_codecs : list<str>
+    + allowed_audio_codecs : list<str>
+    + target_extension : str
+    + target_video_bitrate : int
+    + target_audio_channel_bitrate : int
+    + limit_video_bitrate : int
+    + limit_audio_channel_bitrate : int
+}
+
+class LocationConfig <<dataclass>> {
+    + path : str
+    + abspath : Path
+}
+
+class SpecialDirs {
+    + root_dir : Path
+    + temp_dir : Path
+    + passlog_dir : Path
+    + encoded_dir : Path
+    + originals_dir : Path
+    + processed_dir : Path
+    + exists() : bool
+    + create()
+}
+
+class Constants {
+    + {static} DIR_TEMP : str
+    + {static} DIR_PASSLOG : str
+    + {static} DIR_ENCODED : str
+    + {static} DIR_ORIGINALS : str
+    + {static} DIR_PROCESSED : str
+    + {static} DIR_LOCATIONS : str
+    + {static} FILE_CONFIG : str
+    + {static} get_missing_env_variables() : list<str>
+}
+
+' Relations
+
+Service o-- DirWatcher : one per location
+Service --> Encoder
+
+Encoder ..> Analyzer : uses
+Encoder --> FileInfo : holds current
+Encoder ..> ffmpeg : builds commands
+
+Analyzer ..> ffmpeg : builds ffprobe command
+Analyzer ..> FileInfo : creates
+
+FileInfo *-- VideoStream
+FileInfo *-- "0..*" AudioStream
+FileInfo --> LocationConfig : resolved from Config
+FileInfo --> SpecialDirs : resolved from Config
+
+DirWatcher --> LocationConfig
+DirWatcher --> SpecialDirs
+
+LocationConfig --|> DefaultsConfig
+Config *-- DefaultsConfig
+Config *-- "0..*" LocationConfig
+
+SpecialDirs ..> Constants
+LocationConfig ..> Constants
+ffmpeg ..> Config : reads binary paths
+
+note bottom of Config
+    Module-level global singleton in ""baycone.config"".
+    ""load_config()"" mutates it in place; every module
+    reads from it at runtime.
+end note
+
+@enduml
