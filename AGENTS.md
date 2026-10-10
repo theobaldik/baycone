@@ -19,7 +19,7 @@
 
 ## Test status
 
-`uv run pytest` is green (124 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (145 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -37,26 +37,31 @@ Two tests guard against past data-loss/logic bugs — keep them:
 
 ## Architecture
 
-- `baycone/__main__.py` — Service entry point; `Service` class + `main_loop`
+- `baycone/__main__.py` — Service entry point; `Service` class + `main_loop`. SIGTERM is turned into
+  `KeyboardInterrupt` (PID 1 in a container ignores it otherwise), and a running ffmpeg is killed on interruption.
 - `baycone/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()` mutates this
   in-place. Other modules import `from baycone.config import config` and read from it at runtime.
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
   `config.ffprobe_path`.
-- `baycone/watcher.py` — `DirWatcher` polls via `Path.rglob`, skips `SpecialDirs` subdirectories, detects locked files
-  by size-comparison
+- `baycone/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into them (they
+  grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
+  scan — never sleep per file. Failed files are skipped until they change (`mark_failed`).
 - `baycone/cli.py` — Standalone CLI entry point (separate from service mode), uses `argparse`. Imports
   `from baycone import ffmpeg` — there is no third-party `ffmpeg` dependency.
 
 **`Encoder.process()` invariant:** the original file is moved to `_baycone_originals/` only after both encoding and
-optimizing succeeded. On any failure it stays put and is retried on the next scan.
+optimizing succeeded. On any failure it stays put, `process()` returns `False` and the watcher skips it until the file
+changes — a failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it
+is within limits, and a container mismatch alone is fixed by the optimize remux.
 `_cleanup_workdirs()` always runs (`finally`).
 
 **Directory pruning** (`_remove_empty_dirs`) walks up with `rmdir()`, which only ever succeeds on empty directories.
 Never `rmtree` anything under the watch root — sibling media files may not be processed yet.
 
-**Import of `baycone.logger`** triggers logging setup via `colorlog` at module level as a side effect.
+**Logging** is configured only by `setup_logging()` in `baycone/__main__.py` — importing a module must not configure
+logging.
 
 ## Conventions
 
@@ -71,6 +76,8 @@ Never `rmtree` anything under the watch root — sibling media files may not be 
   implementation and is intentionally unused
 - `FileInfo.file_path` setter auto-resolves `LocationConfig` and `SpecialDirs` from the global `config.locations`
 - Use `deepcopy`/`copy` when returning mutable internal state from properties
+- Docstrings and comments only where the code can't speak for itself (a non-obvious why, invariant or gotcha) —
+  one short line, no restating names or signatures, no section banners, no commented-out code. `TODO`s are fine
 
 ## Branching and releases
 

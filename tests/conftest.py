@@ -1,11 +1,3 @@
-"""
-Shared fixtures.
-
-`Constants.DIR_LOCATIONS` is read from the environment at import time, so tests patch the class attribute
-directly instead of the environment. Every location path in the config is resolved against it
-(`LocationConfig.abspath`), which makes it the single knob needed to root a test location in `tmp_path`.
-"""
-
 from pathlib import Path
 
 import pytest
@@ -24,7 +16,7 @@ def locations_root(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture
 def location_config(locations_root) -> LocationConfig:
-    """A `LocationConfig` registered in the global config, so `FileInfo` can resolve paths against it."""
+    """Registered in the global config, which `FileInfo` resolves paths against."""
     lc = LocationConfig(
         path=LOCATION_NAME,
         allowed_extensions=[".mp4", ".mkv"],
@@ -44,5 +36,4 @@ def location_config(locations_root) -> LocationConfig:
 
 @pytest.fixture
 def location_dir(location_config) -> Path:
-    """The watched directory of the test location."""
     return location_config.abspath

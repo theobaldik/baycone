@@ -6,15 +6,20 @@ footer Version 1.0
 start
 :Scan Watch Directory;
 note right
-    ""Path.rglob("*")"", skipping the
-    ""_baycone_*"" and "".baycone"" dirs.
+    ""Path.walk()"", pruning the ""_baycone_*""
+    and "".baycone"" dirs instead of descending.
 end note
 
 if (supported file found) then (yes)
-    if (file is locked) then (no)
-    else (yes)
-        note right: Size changed within 1 s - still being written.
+    if (size and mtime unchanged since previous scan) then (yes)
+    else (no)
+        note right: New, or still being written.
         :Skip file until next scan;
+        stop
+    endif
+    if (failed before and unchanged since) then (no)
+    else (yes)
+        :Skip file until it is modified;
         stop
     endif
 else (no)
@@ -28,20 +33,27 @@ note right
     bitrates, channels, duration.
 end note
 
-if (container, codecs and bitrates within limits) then (no)
-    :Encode File 1<sup>st</sup> Pass;
-    note right: "".baycone/passlogfiles/<relative path>""
-    :Encode File 2<sup>nd</sup> Pass;
-    note right: "".baycone/encoded/<relative path>.mp4""
+if (video or audio outside limits) then (yes)
+    if (video outside limits) then (yes)
+        :Encode File 1<sup>st</sup> Pass;
+        note right: "".baycone/passlogfiles/<relative path>""
+        :Encode File 2<sup>nd</sup> Pass;
+        note right: "".baycone/encoded/<relative path>.mp4""
+    else (no)
+        :Encode Audio, Copy Video;
+        note right: Single pass, "".baycone/encoded/<relative path>.mp4""
+    endif
 
     if (encoding succeeded) then (yes)
     else (no)
         :Log error;
         :Clear Work Directories;
-        note right: Original is left in place for the next scan.
+        :Mark File Failed;
+        note right: Original is left in place and retried once modified.
         stop
     endif
-else (yes)
+else (no)
+    note right: A container mismatch alone is fixed by the remux below.
 endif
 
 :Optimize File;
@@ -55,7 +67,8 @@ if (optimizing succeeded) then (yes)
 else (no)
     :Log error;
     :Clear Work Directories;
-    note right: Original is left in place for the next scan.
+    :Mark File Failed;
+    note right: Original is left in place and retried once modified.
     stop
 endif
 
@@ -70,6 +83,8 @@ end note
 
 :Clear Work Directories;
 note right: passlogfiles/ and encoded/
+
+:Scan again without sleeping;
 
 stop
 

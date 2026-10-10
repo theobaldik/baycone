@@ -33,34 +33,47 @@ file_info -> file_info : resolve LocationConfig\nand SpecialDirs from path
 file_info --> analyzer : file_info
 deactivate file_info
 
-analyzer -> analyzer : flag shall_encode per\ncontainer / video / audio
+analyzer -> analyzer : flag shall_encode per video / audio stream,\nshall_remux for the container
 analyzer --> encoder : file_info
 deactivate analyzer
 
-alt shall encode
-    encoder -> cmd : get_cmd_encode_movie_pass_1(...)
-    activate cmd
-    cmd --> encoder : cmd
-    deactivate cmd
-    encoder -> proc : run 1st pass
-    activate proc
-    proc --> encoder : progress on pipe:1
-    deactivate proc
+alt video or audio shall encode
+    encoder -> encoder : cap bitrates at target,\ntarget when source is unknown
 
-    encoder -> cmd : get_cmd_encode_movie_pass_2(...)
-    activate cmd
-    cmd --> encoder : cmd
-    deactivate cmd
-    encoder -> proc : run 2nd pass
-    activate proc
-    proc --> encoder : encoded/<file>.mp4
-    deactivate proc
+    alt video shall encode
+        encoder -> cmd : get_cmd_encode_movie_pass_1(...)
+        activate cmd
+        cmd --> encoder : cmd
+        deactivate cmd
+        encoder -> proc : run 1st pass
+        activate proc
+        proc --> encoder : progress on pipe:1
+        deactivate proc
+
+        encoder -> cmd : get_cmd_encode_movie_pass_2(...)
+        activate cmd
+        cmd --> encoder : cmd
+        deactivate cmd
+        encoder -> proc : run 2nd pass
+        activate proc
+        proc --> encoder : encoded/<file>.mp4
+        deactivate proc
+    else only audio shall encode
+        encoder -> cmd : get_cmd_encode_audio(...)
+        activate cmd
+        cmd --> encoder : cmd
+        deactivate cmd
+        encoder -> proc : run audio encode, copy video
+        activate proc
+        proc --> encoder : encoded/<file>.mp4
+        deactivate proc
+    end
 
     alt encoding failed
         encoder -> encoder : _cleanup_workdirs()
         note right
-            ""process()"" returns here - optimizing is skipped and the
-            original stays in place, so the next scan picks it up again.
+            ""process()"" returns ""False"" - optimizing is skipped, the original
+            stays in place and the watcher skips it until it is modified.
         end note
         deactivate encoder
     end
@@ -85,5 +98,10 @@ alt optimizing succeeded
 end
 
 encoder -> encoder : _cleanup_workdirs()
+
+note over encoder, proc
+    If interrupted (SIGTERM / Ctrl+C), the running ffmpeg is killed,
+    the work directories are cleared and the original stays in place.
+end note
 
 @enduml

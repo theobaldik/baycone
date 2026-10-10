@@ -1,12 +1,6 @@
-"""
-Tests for baycone/config.py
-
-Covers the `Config -> DefaultsConfig -> LocationConfig` inheritance chain, YAML loading and the
-per-location override file.
-"""
-
 from pathlib import Path
 
+import pytest
 import yaml
 
 from baycone.config import Config, Constants, DefaultsConfig, LocationConfig, SpecialDirs, load_config
@@ -17,11 +11,6 @@ def parse(yaml_text: str) -> Config:
     cfg = Config()
     cfg.from_dict(yaml.safe_load(yaml_text))
     return cfg
-
-
-# ---------------------------------------------------------------------------
-# Defaults inheritance
-# ---------------------------------------------------------------------------
 
 
 class TestDefaultsInheritance:
@@ -79,11 +68,6 @@ class TestDefaultsInheritance:
         assert cfg.locations[0].path == "movies"
 
 
-# ---------------------------------------------------------------------------
-# Top level keys
-# ---------------------------------------------------------------------------
-
-
 class TestConfig:
     def test_binary_paths_and_poll_interval(self):
         cfg = parse("ffmpeg_path: /opt/ffmpeg\nffprobe_path: /opt/ffprobe\npoll_interval: 2.5\n")
@@ -100,6 +84,10 @@ class TestConfig:
     def test_unknown_keys_are_ignored(self):
         cfg = parse("nonsense: 1\nlocations:\n  - path: movies\n")
         assert len(cfg.locations) == 1
+
+    def test_empty_sections_are_ignored(self):
+        cfg = parse("defaults:\nlocations:\n")
+        assert cfg.locations == []
 
     def test_roundtrips_through_to_dict(self):
         cfg = parse("defaults:\n  target_video_bitrate: 1500\nlocations:\n  - path: movies\n")
@@ -125,30 +113,40 @@ class TestLoadConfig:
         load_config(cfg_file)  # must not raise
 
 
-# ---------------------------------------------------------------------------
-# Location override file
-# ---------------------------------------------------------------------------
-
-
 class TestLoadConfigOverride:
-    def test_applies_override_file(self, location_config, location_dir):
-        override = location_dir / Constants.FILE_CONFIG_OVERRIDE
-        override.parent.mkdir(parents=True, exist_ok=True)
+    @pytest.fixture
+    def override(self, location_dir) -> Path:
+        path = location_dir / Constants.FILE_CONFIG_OVERRIDE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_applies_override_file(self, location_config, override):
         override.write_text("target_video_bitrate: 777\n")
-
-        config_module.load_config_override(location_config)
-
-        assert config_module.config.locations[0].target_video_bitrate == 777
+        config_module.load_config_override(location_config, location_config.to_dict())
+        assert location_config.target_video_bitrate == 777
 
     def test_no_override_file_is_a_noop(self, location_config):
         before = location_config.target_video_bitrate
-        config_module.load_config_override(location_config)
-        assert config_module.config.locations[0].target_video_bitrate == before
+        config_module.load_config_override(location_config, location_config.to_dict())
+        assert location_config.target_video_bitrate == before
 
+    def test_removed_override_restores_base(self, location_config, override):
+        base = location_config.to_dict()
+        override.write_text("target_video_bitrate: 777\n")
+        config_module.load_config_override(location_config, base)
+        override.unlink()
+        config_module.load_config_override(location_config, base)
+        assert location_config.target_video_bitrate == base["target_video_bitrate"]
 
-# ---------------------------------------------------------------------------
-# SpecialDirs
-# ---------------------------------------------------------------------------
+    def test_empty_override_file_is_ignored(self, location_config, override):
+        override.write_text("")
+        config_module.load_config_override(location_config, location_config.to_dict())
+
+    def test_invalid_override_file_is_ignored(self, location_config, override):
+        before = location_config.target_video_bitrate
+        override.write_text("target_video_bitrate: [unclosed\n")
+        config_module.load_config_override(location_config, location_config.to_dict())
+        assert location_config.target_video_bitrate == before
 
 
 class TestSpecialDirs:
@@ -173,11 +171,6 @@ class TestSpecialDirs:
 
     def test_iterates_all_special_dirs(self, tmp_path):
         assert len(list(SpecialDirs(tmp_path))) == len(Constants.SPECIAL_DIRS)
-
-
-# ---------------------------------------------------------------------------
-# LocationConfig
-# ---------------------------------------------------------------------------
 
 
 class TestLocationConfig:

@@ -12,40 +12,52 @@ class Service {
     - _watchers : list<DirWatcher>
     - _encoder : Encoder
     - _stop_signal : bool
-    + start()
+    + start() : int
     + stop()
     + main_loop()
+    - _process_next() : bool
+    - {static} _handle_sigterm(signum : int, frame)
 }
 
 class DirWatcher {
     - _dir_path : Path
     - _location_config : LocationConfig
-    - _locked_files : set<Path>
+    - _base_config : dict
+    - _override_mtime : int | None
+    - _signatures : dict<Path, Signature>
+    - _failed : dict<Path, Signature>
     + special_dirs : SpecialDirs
     + get_new_file() : Path | None
-    - _is_file_locked(file_path : Path, interval : float) : bool
+    + mark_failed(file_path : Path)
+    - _iter_files(extensions : set<str>) : Iterator<Path>
+    - _reload_config_override()
+    - _create_special_dirs()
 }
 
 class Analyzer <<static>> {
     + {static} analyze(file_path : Path) : FileInfo
     - {static} _get_file_info(file_path : Path) : FileInfo
+    - {static} _get_bitrate(stream : dict) : int
     - {static} _get_ffprobe_result(file_path : Path) : dict | None
 }
 
 class Encoder {
     - _processing_file : FileInfo
-    + process(file_path : Path)
+    + process(file_path : Path) : bool
     - _encode() : bool
     - _optimize(encoded : bool) : bool
     - _archive_original()
     - _cleanup_workdirs()
-    - _remove_empty_dirs(directory : Path, root_dir : Path)
+    - _run_ffmpeg(cmd : list<str>, progress_template : str)
     - _log_progress(process : Popen, template : str)
+    - {static} _cap_bitrate(source : int, target : int) : int
+    - {static} _remove_empty_dirs(directory : Path, root_dir : Path)
+    - {static} _clear_dir(directory : Path)
 }
 
 class FileInfo {
     + is_valid : bool
-    + shall_encode : bool
+    + shall_remux : bool
     + duration : int
     + containers : list<str>
     + file_path : Path
@@ -54,6 +66,8 @@ class FileInfo {
     + encoding_path : Path
     + original_path : Path
     + processed_path : Path
+    + location_config : LocationConfig
+    + special_dirs : SpecialDirs
 }
 
 class VideoStream <<dataclass>> {
@@ -76,8 +90,14 @@ class AudioStream <<dataclass>> {
 class ffmpeg <<module>> {
     + get_cmd_encode_movie_pass_1() : list<str>
     + get_cmd_encode_movie_pass_2() : list<str>
+    + get_cmd_encode_audio() : list<str>
     + get_cmd_optimize() : list<str>
     + get_cmd_ffprobe() : list<str>
+}
+
+class Serializable <<mixin>> {
+    + from_dict(data : dict)
+    + to_dict() : dict
 }
 
 class Config <<singleton>> {
@@ -94,8 +114,12 @@ class DefaultsConfig <<dataclass>> {
     + allowed_video_codecs : list<str>
     + allowed_audio_codecs : list<str>
     + target_extension : str
+    + target_container : str
+    + target_video_codec : str
     + target_video_bitrate : int
+    + target_audio_codec : str
     + target_audio_channel_bitrate : int
+    + target_audio_languages : list<str>
     + limit_video_bitrate : int
     + limit_audio_channel_bitrate : int
 }
@@ -117,11 +141,13 @@ class SpecialDirs {
 }
 
 class Constants {
-    + {static} DIR_TEMP : str
-    + {static} DIR_PASSLOG : str
-    + {static} DIR_ENCODED : str
-    + {static} DIR_ORIGINALS : str
-    + {static} DIR_PROCESSED : str
+    + {static} DIR_TEMP : Path
+    + {static} DIR_PASSLOG : Path
+    + {static} DIR_ENCODED : Path
+    + {static} DIR_ORIGINALS : Path
+    + {static} DIR_PROCESSED : Path
+    + {static} SPECIAL_DIRS : tuple<Path>
+    + {static} FILE_CONFIG_OVERRIDE : Path
     + {static} DIR_LOCATIONS : str
     + {static} FILE_CONFIG : str
     + {static} get_missing_env_variables() : list<str>
@@ -144,10 +170,13 @@ FileInfo *-- "0..*" AudioStream
 FileInfo --> LocationConfig : resolved from Config
 FileInfo --> SpecialDirs : resolved from Config
 
-DirWatcher --> LocationConfig
-DirWatcher --> SpecialDirs
+DirWatcher --> LocationConfig : resets and overrides
+DirWatcher --> SpecialDirs : prunes from scan
+DirWatcher ..> Config : load_config_override()
 
 LocationConfig --|> DefaultsConfig
+Config --|> Serializable
+DefaultsConfig --|> Serializable
 Config *-- DefaultsConfig
 Config *-- "0..*" LocationConfig
 

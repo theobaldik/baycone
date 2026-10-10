@@ -28,7 +28,6 @@ LOGGING_CONFIG = {
     "root": {"level": "DEBUG", "handlers": ["console"]},
 }
 
-# def setup_logger() -> None:
-#     logging.config.dictConfig(LOGGING_CONFIG)
 
-logging.config.dictConfig(LOGGING_CONFIG)
+def setup_logging() -> None:
+    logging.config.dictConfig(LOGGING_CONFIG)

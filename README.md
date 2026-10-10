@@ -12,16 +12,18 @@ plain MP4 that any player handles.
 - Transcodes to **h264 / AAC** MP4 using a two-pass `libx264` encode
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
 - Strips all metadata and tags the audio track with its language and channel layout
-- Skips files that already meet the target codec / container / bitrate requirements
+- Skips files that already meet the target codec / container / bitrate requirements, only remuxes files whose
+  container alone differs, and copies the video stream when only the audio needs re-encoding
 - Waits for files that are still being copied in, and never touches the original until the encoded result has been
-  written successfully
+  written successfully. A file that fails is left in place and retried once it is modified
 - Runs as a Docker container; configured entirely through a YAML file and environment variables
 - Ships a standalone CLI (`bin/baycone`) for one-off transcodes
 
 ## Limitations
 
-- **Single audio track only.** The first audio stream is used; additional tracks are dropped and the output track is
-  always tagged `eng`. `target_audio_languages` is reserved for this and has no effect yet.
+- **Single audio track only.** Only the first audio stream is handled: a re-encoded file keeps just that track, a file
+  that is only remuxed keeps all of them, and the first one is always tagged `eng`. `target_audio_languages` is reserved
+  for this and has no effect yet.
 - No subtitle handling.
 
 ## Directory structure
@@ -82,7 +84,8 @@ Each location inherits from `defaults` and can override any field individually. 
 [`config.yml.example`](config.yml.example) for a fully commented file.
 
 A location can also be reconfigured at runtime without restarting the service by dropping a
-`.baycone/config.override.yml` file into it; it is re-read on every scan and applies to that location only.
+`.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.
+Removing it restores the location's settings from `config.yml`.
 
 ## Environment variables
 

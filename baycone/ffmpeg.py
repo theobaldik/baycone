@@ -59,10 +59,12 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
     "-hide_banner",
     "-i",
     "{input_file}",
+    "-map",
+    "0:v:0",
     "-c:v",
     "libx264",
     "-x264-params",
-    f"{':'.join(X264_PARAMS_MOVIE_PASS_1)}",
+    ":".join(X264_PARAMS_MOVIE_PASS_1),
     "-b:v",
     "{video_bitrate}k",
     "-pass",
@@ -84,10 +86,12 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "-hide_banner",
     "-i",
     "{input_file}",
+    "-map",
+    "0:v:0",
     "-c:v",
     "libx264",
     "-x264-params",
-    f"{':'.join(X264_PARAMS_MOVIE_PASS_2)}",
+    ":".join(X264_PARAMS_MOVIE_PASS_2),
     "-preset",
     "slow",
     "-tune",
@@ -100,6 +104,8 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "{video_bitrate}k",
     "-pass",
     "2",
+    "-map",
+    "0:a:0",
     "-c:a",
     "aac",
     "-b:a",
@@ -117,11 +123,34 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "{output_file}",
 ]
 
+CMD_FFMPEG_ENCODE_AUDIO = [
+    "{ffmpeg}",
+    "-y",
+    "-hide_banner",
+    "-i",
+    "{input_file}",
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "{audio_bitrate}k",
+    "-progress",
+    "pipe:1",
+    "{output_file}",
+]
+
 # TODO: Merge with 2nd pass of encoding
 CMD_FFMPEG_OPTIMIZE = [
     "{ffmpeg}",
     "-y",
     "-hide_banner",
+    "-fflags",
+    "+genpts",
     "-i",
     "{input_file}",
     "-map",
@@ -189,6 +218,18 @@ def get_cmd_encode_movie_pass_2(
         for arg in CMD_FFMPEG_ENCODE_MOVIE_PASS_2
     ]
     return cmd
+
+
+def get_cmd_encode_audio(input_file: Path, output_file: Path, audio_bitrate: int) -> list[str]:
+    return [
+        arg.format(
+            ffmpeg=config.ffmpeg_path,
+            input_file=input_file.absolute(),
+            output_file=output_file.absolute(),
+            audio_bitrate=audio_bitrate,
+        )
+        for arg in CMD_FFMPEG_ENCODE_AUDIO
+    ]
 
 
 def get_cmd_optimize(

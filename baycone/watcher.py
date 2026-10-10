@@ -1,66 +1,84 @@
 import logging
-import time
+from collections.abc import Iterator
 from pathlib import Path
 
-import baycone.logger
 from baycone import config
-from baycone.config import LocationConfig, SpecialDirs
+from baycone.config import Constants, LocationConfig, SpecialDirs
 
 log = logging.getLogger(__name__)
 
+type Signature = tuple[int, int]
+
 
 class DirWatcher:
-    """Watches a directory for new files to process."""
 
     def __init__(self, location_config: LocationConfig) -> None:
         self._dir_path: Path = location_config.abspath
-        self._location_config = location_config
-        self._locked_files: set = set()
+        self._location_config: LocationConfig = location_config
+        self._base_config: dict = location_config.to_dict()
+        self._override_mtime: int | None = None
+
+        # A file is ready once its signature is unchanged since the previous scan
+        self._signatures: dict[Path, Signature] = {}
+        self._failed: dict[Path, Signature] = {}
 
         self.special_dirs: SpecialDirs = SpecialDirs(self._dir_path)
         self._create_special_dirs()
 
     def get_new_file(self) -> Path | None:
-        """Returns a new file to be processed or `None` if no supported file is found."""
-        config.load_config_override(self._location_config)
-        if not self._location_config.allowed_extensions:
+        self._reload_config_override()
+
+        extensions = {ext.lower() for ext in self._location_config.allowed_extensions}
+        if not extensions:
             return None
-        for file_path in self._dir_path.rglob("*"):
-            if not file_path.is_file():
+
+        signatures: dict[Path, Signature] = {}
+        ready: Path | None = None
+
+        for file_path in self._iter_files(extensions):
+            try:
+                stat = file_path.stat()
+            except OSError:
                 continue
-            if file_path.suffix.lower() not in self._location_config.allowed_extensions:
+            signature = (stat.st_size, stat.st_mtime_ns)
+            signatures[file_path] = signature
+
+            if file_path not in self._signatures:
+                log.info(f"New file found: '{file_path}'")
+            if ready or self._signatures.get(file_path) != signature or self._failed.get(file_path) == signature:
                 continue
-            for spec_dir in self.special_dirs:
-                if file_path.is_relative_to(spec_dir):
-                    break
-            # File not in spec dir
-            else:
-                if self._is_file_locked(file_path):
-                    if file_path not in self._locked_files:
-                        log.info(f"New locked file found: '{file_path}'")
-                        self._locked_files.add(file_path)
-                    continue
+            ready = file_path
 
-                if file_path in self._locked_files:
-                    self._locked_files.remove(file_path)
-                    log.info(f"File unlocked: '{file_path}'")
-                else:
-                    log.info(f"New file found: '{file_path}'")
+        self._signatures = signatures
+        self._failed = {path: sig for path, sig in self._failed.items() if path in signatures}
+        return ready
 
-                return file_path
-        return None
+    def mark_failed(self, file_path: Path) -> None:
+        """Skips `file_path` until it is modified."""
+        if signature := self._signatures.get(file_path):
+            self._failed[file_path] = signature
+            log.warning(f"File '{file_path}' will be retried once it changes")
 
-    @staticmethod
-    def _is_file_locked(file_path: Path, interval: float = 1.0) -> bool:
-        """Returns `True` if the file is still being written to, `False` otherwise."""
+    def _iter_files(self, extensions: set[str]) -> Iterator[Path]:
+        special_dirs = set(self.special_dirs)
+        for dir_path, dir_names, file_names in self._dir_path.walk():
+            dir_names[:] = [name for name in dir_names if dir_path / name not in special_dirs]
+            for name in file_names:
+                file_path = dir_path / name
+                if file_path.suffix.lower() in extensions:
+                    yield file_path
+
+    def _reload_config_override(self) -> None:
         try:
-            size_before = file_path.stat().st_size
-            time.sleep(interval)
-            return size_before != file_path.stat().st_size
+            mtime = (self._dir_path / Constants.FILE_CONFIG_OVERRIDE).stat().st_mtime_ns
         except OSError:
-            return True
+            mtime = None
+
+        if mtime != self._override_mtime:
+            self._override_mtime = mtime
+            config.load_config_override(self._location_config, self._base_config)
 
     def _create_special_dirs(self) -> None:
         if not self.special_dirs.exists():
-            logging.info(f"Creating special directories")
+            log.info(f"Creating special directories in '{self._dir_path}'")
             self.special_dirs.create()

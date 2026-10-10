@@ -7,30 +7,21 @@ from argparse import Namespace
 from pathlib import Path
 
 from baycone import ffmpeg
+from baycone.config import Constants
+from baycone.encoding import TRACK_NAMES
 
-DIR_TEMP = ".baycone"
-DIR_PROCESSED = "_baycone_processed"
 EXT_PROCESSED = ".mp4"
-
-TRACK_NAME_MAP = {
-    1: "Mono",
-    2: "Stereo",
-    3: "Stereo 2.1",
-    6: "Surround 5.1",
-    8: "Surround 7.1",
-    9: "Surround 8.1",
-}
 
 
 # region Directories and files
 
 
 def get_dir_temp(input_file: Path) -> Path:
-    return input_file.parent / DIR_TEMP
+    return input_file.parent / Constants.DIR_TEMP
 
 
 def get_dir_processed(input_file: Path) -> Path:
-    return input_file.parent / DIR_PROCESSED
+    return input_file.parent / Constants.DIR_PROCESSED
 
 
 def get_file_passlog(input_file: Path) -> Path:
@@ -46,7 +37,6 @@ def get_file_processed(input_file: Path) -> Path:
 
 
 def prepare_dirs(input_file: Path, include_temp: bool) -> None:
-    """Clears and creates Baycone directories."""
     if include_temp:
         temp_dir = get_dir_temp(input_file)
         if temp_dir.is_dir():
@@ -60,7 +50,6 @@ def prepare_dirs(input_file: Path, include_temp: bool) -> None:
 
 
 def clear_dirs(input_file: Path) -> None:
-    """Clears Baycone temp directory."""
     temp_dir = get_dir_temp(input_file)
     if temp_dir.is_dir():
         shutil.rmtree(temp_dir)
@@ -82,7 +71,7 @@ def print_progress(process: subprocess.Popen, duration: float, template: str) ->
 
     print(template.format(percent=percent), end="", flush=True)
 
-    # The pipe must be drained even when the progress cannot be computed, otherwise FFmpeg blocks on a full pipe.
+    # Drain the pipe even without a duration, otherwise FFmpeg blocks on a full pipe
     for line in process.stdout:
         key, _, value = line.strip().partition("=")
 
@@ -127,14 +116,11 @@ def optimize(input_file: Path, output_file: Path, language: str, track_name: str
 
 
 def cli() -> Namespace:
-    """Creates the CLI and parses arguments."""
     parser = argparse.ArgumentParser(prog="Baycone CLI", description="CLI executor of Baycone transcoder")
     parser.add_argument("input", help="input file path")
     parser.add_argument("-l", "--language", type=str, default="eng", help="audio track language")
-    parser.add_argument("-v", "--video-bitrate", type=int, default="2250", help="target video bitrate in kbps")
-    parser.add_argument(
-        "-a", "--audio-bitrate", type=int, default="64", help="target audio bitrate per channel in kbps"
-    )
+    parser.add_argument("-v", "--video-bitrate", type=int, default=2250, help="target video bitrate in kbps")
+    parser.add_argument("-a", "--audio-bitrate", type=int, default=64, help="target audio bitrate per channel in kbps")
     parser.add_argument("-o", "--optimize", action="store_true", help="skip transcoding and only optimize the file")
     parser.add_argument("-i", "--info", action="store_true", help="skip transcoding and display file information")
     return parser.parse_args()
@@ -144,22 +130,22 @@ def arg_check(args: Namespace) -> bool:
     input_path = Path(args.input).absolute()
 
     if not input_path.is_file():
-        print(f"Invalid file path: '{input_path}'")
+        print(f"Invalid file path: '{input_path}'", file=sys.stderr)
         return False
 
     if args.info:
         return True
 
     if len(args.language) != 3:
-        print("Language must be 3 characters long")
+        print("Language must be 3 characters long", file=sys.stderr)
         return False
 
     if args.audio_bitrate <= 0:
-        print("Audio bitrate must be a positive number")
+        print("Audio bitrate must be a positive number", file=sys.stderr)
         return False
 
     if args.video_bitrate <= 0:
-        print("Video bitrate must be a positive number")
+        print("Video bitrate must be a positive number", file=sys.stderr)
         return False
 
     return True
@@ -186,7 +172,7 @@ def main() -> int:
         audio_channels = int(audio_streams[0].get("channels", 1)) if audio_streams else 1
 
         audio_bitrate = args.audio_bitrate * audio_channels
-        audio_title = TRACK_NAME_MAP.get(audio_channels, "")
+        audio_title = TRACK_NAMES.get(audio_channels, "")
 
         prepare_dirs(input_path, not args.optimize)
 
@@ -205,7 +191,7 @@ def main() -> int:
         return 0
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         return 2
 
 

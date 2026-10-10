@@ -1,10 +1,3 @@
-"""
-Tests for baycone/ffmpeg.py
-
-The command lists are templates with `{placeholder}` substitution, so these tests assert that every
-placeholder is resolved and that the configured binary paths are honoured.
-"""
-
 from pathlib import Path
 
 import pytest
@@ -28,6 +21,7 @@ def all_commands() -> list[list[str]]:
     return [
         ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250),
         ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, 128),
+        ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, 128),
         ffmpeg.get_cmd_optimize(INPUT, OUTPUT, "eng", "Stereo"),
         ffmpeg.get_cmd_ffprobe(INPUT),
     ]
@@ -75,6 +69,16 @@ class TestCommandContent:
         assert cmd[cmd.index("-b:v") + 1] == "2250k"
         assert cmd[cmd.index("-b:a") + 1] == "128k"
         assert cmd[cmd.index("-pass") + 1] == "2"
+
+    def test_pass_2_maps_the_first_audio_stream(self):
+        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, 128)
+        assert "0:a:0" in cmd
+
+    def test_audio_encode_copies_video(self):
+        cmd = ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, 128)
+        assert cmd[cmd.index("-c:v") + 1] == "copy"
+        assert cmd[cmd.index("-b:a") + 1] == "128k"
+        assert "-pass" not in cmd
 
     def test_optimize_copies_streams_and_strips_metadata(self):
         cmd = ffmpeg.get_cmd_optimize(INPUT, OUTPUT, "eng", "Stereo")

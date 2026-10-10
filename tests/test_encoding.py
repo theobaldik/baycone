@@ -1,13 +1,3 @@
-"""
-Tests for baycone/encoding.py
-
-Strategy:
-- Analyzer tests inject a fake ffprobe payload by mocking `subprocess.run` - no real ffprobe needed.
-- Encoder tests mock `subprocess.Popen` / `subprocess.run` - no real ffmpeg needed.
-- `FileInfo` resolves its `LocationConfig` and `SpecialDirs` from the global config via the `file_path`
-  setter, so every test relies on the `location_config` fixture (see conftest.py).
-"""
-
 import json
 import subprocess
 from pathlib import Path
@@ -17,10 +7,6 @@ import pytest
 
 from baycone.config import SpecialDirs
 from baycone.encoding import Analyzer, AudioStream, Encoder, FileInfo, VideoStream
-
-# ---------------------------------------------------------------------------
-# Fixtures & helpers
-# ---------------------------------------------------------------------------
 
 
 def make_ffprobe_output(
@@ -80,11 +66,6 @@ def analyze(file_path: Path, ffprobe_output: str, method=Analyzer.analyze) -> Fi
         return method(file_path)
 
 
-# ---------------------------------------------------------------------------
-# AudioStream
-# ---------------------------------------------------------------------------
-
-
 class TestAudioStream:
     @pytest.mark.parametrize(
         "channels,expected",
@@ -104,11 +85,6 @@ class TestAudioStream:
 
     def test_overall_bitrate_is_per_channel_times_channels(self):
         assert AudioStream(channel_bitrate=64, channels=6).overall_bitrate == 384
-
-
-# ---------------------------------------------------------------------------
-# FileInfo - path resolution
-# ---------------------------------------------------------------------------
 
 
 class TestFileInfoPaths:
@@ -158,11 +134,6 @@ class TestFileInfoPaths:
             FileInfo(tmp_path.parent / "elsewhere" / "movie.mp4")
 
 
-# ---------------------------------------------------------------------------
-# Analyzer._get_ffprobe_result
-# ---------------------------------------------------------------------------
-
-
 class TestGetFfprobeResult:
     def test_returns_parsed_dict_on_success(self, media_file):
         with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=make_ffprobe_output())):
@@ -184,11 +155,6 @@ class TestGetFfprobeResult:
     def test_returns_none_on_invalid_json(self, media_file):
         with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout="not json")):
             assert Analyzer._get_ffprobe_result(media_file) is None
-
-
-# ---------------------------------------------------------------------------
-# Analyzer._get_file_info - ffprobe payload parsing
-# ---------------------------------------------------------------------------
 
 
 class TestGetFileInfo:
@@ -233,6 +199,30 @@ class TestGetFileInfo:
     def test_audio_language_extracted(self, media_file):
         assert self._info(media_file, audio_lang="cze").audio_streams[0].lang == "cze"
 
+    def test_unknown_values_default_to_zero(self, media_file):
+        payload = json.dumps(
+            {
+                "format": {"format_name": "mp4", "duration": "N/A"},
+                "streams": [
+                    {"codec_type": "video", "codec_name": "h264", "bit_rate": "N/A"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 2},
+                ],
+            }
+        )
+        info = analyze(media_file, payload, method=Analyzer._get_file_info)
+        assert info.duration == 0
+        assert info.video_stream.bitrate == 0
+        assert info.audio_streams[0].channel_bitrate == 0
+
+    def test_matroska_bitrate_read_from_bps_tag(self, media_file):
+        payload = json.dumps(
+            {
+                "format": {"format_name": "matroska,webm", "duration": "100.0"},
+                "streams": [{"codec_type": "video", "codec_name": "h264", "tags": {"BPS": "3000000"}}],
+            }
+        )
+        assert analyze(media_file, payload, method=Analyzer._get_file_info).video_stream.bitrate == 3000
+
     def test_no_audio_streams_on_video_only_file(self, media_file):
         payload = json.dumps(
             {
@@ -243,23 +233,20 @@ class TestGetFileInfo:
         assert analyze(media_file, payload, method=Analyzer._get_file_info).audio_streams == []
 
 
-# ---------------------------------------------------------------------------
-# Analyzer.analyze - shall_encode logic
-# ---------------------------------------------------------------------------
-
-
 class TestAnalyze:
     def _analyze(self, media_file: Path, **kwargs) -> FileInfo:
         return analyze(media_file, make_ffprobe_output(**kwargs))
 
     def test_no_encode_needed_when_all_within_limits(self, media_file):
         info = self._analyze(media_file)
-        assert info.shall_encode is False
+        assert info.shall_remux is False
         assert info.video_stream.shall_encode is False
         assert all(not s.shall_encode for s in info.audio_streams)
 
-    def test_encode_needed_wrong_container(self, media_file):
-        assert self._analyze(media_file, container="avi").shall_encode is True
+    def test_remux_needed_wrong_container(self, media_file):
+        info = self._analyze(media_file, container="avi")
+        assert info.shall_remux is True
+        assert info.video_stream.shall_encode is False
 
     def test_encode_needed_wrong_video_codec(self, media_file):
         assert self._analyze(media_file, video_codec="hevc").video_stream.shall_encode is True
@@ -286,11 +273,6 @@ class TestAnalyze:
         assert info.audio_streams[0].shall_encode is True
 
 
-# ---------------------------------------------------------------------------
-# Encoder.process - orchestration
-# ---------------------------------------------------------------------------
-
-
 class TestEncoderProcess:
     def _file_info(self, media_file: Path, **kwargs) -> FileInfo:
         return FileInfo(
@@ -300,7 +282,7 @@ class TestEncoderProcess:
             containers=["mp4"],
             video_stream=VideoStream(codec="h264", bitrate=2000, shall_encode=kwargs.get("video_shall_encode", False)),
             audio_streams=[AudioStream(codec="aac", channels=2, shall_encode=kwargs.get("audio_shall_encode", False))],
-            shall_encode=kwargs.get("shall_encode", False),
+            shall_remux=kwargs.get("shall_remux", False),
         )
 
     def _process(self, encoder: Encoder, file_info: FileInfo, media_file: Path, **mocks):
@@ -311,20 +293,28 @@ class TestEncoderProcess:
             patch.object(encoder, "_archive_original") as mock_archive,
             patch.object(encoder, "_cleanup_workdirs") as mock_cleanup,
         ):
-            encoder.process(media_file)
-        return mock_encode, mock_optimize, mock_archive, mock_cleanup
+            result = encoder.process(media_file)
+        return result, mock_encode, mock_optimize, mock_archive, mock_cleanup
 
     def test_skips_encode_when_not_needed(self, media_file, special_dirs):
         encoder = Encoder()
-        encode, optimize, archive, _ = self._process(encoder, self._file_info(media_file), media_file)
+        result, encode, optimize, archive, _ = self._process(encoder, self._file_info(media_file), media_file)
+        assert result is True
         encode.assert_not_called()
         optimize.assert_called_once_with(False)
         archive.assert_called_once()
 
+    def test_wrong_container_is_only_remuxed(self, media_file, special_dirs):
+        encoder = Encoder()
+        info = self._file_info(media_file, shall_remux=True)
+        _, encode, optimize, _, _ = self._process(encoder, info, media_file)
+        encode.assert_not_called()
+        optimize.assert_called_once_with(False)
+
     def test_calls_encode_when_needed(self, media_file, special_dirs):
         encoder = Encoder()
-        info = self._file_info(media_file, shall_encode=True)
-        encode, optimize, archive, _ = self._process(encoder, info, media_file)
+        info = self._file_info(media_file, video_shall_encode=True)
+        _, encode, optimize, archive, _ = self._process(encoder, info, media_file)
         encode.assert_called_once()
         optimize.assert_called_once_with(True)
         archive.assert_called_once()
@@ -332,33 +322,35 @@ class TestEncoderProcess:
     def test_encode_triggered_by_video_stream(self, media_file, special_dirs):
         encoder = Encoder()
         info = self._file_info(media_file, video_shall_encode=True)
-        encode, _, _, _ = self._process(encoder, info, media_file)
+        _, encode, _, _, _ = self._process(encoder, info, media_file)
         encode.assert_called_once()
 
     def test_encode_triggered_by_audio_stream(self, media_file, special_dirs):
         encoder = Encoder()
         info = self._file_info(media_file, audio_shall_encode=True)
-        encode, _, _, _ = self._process(encoder, info, media_file)
+        _, encode, _, _, _ = self._process(encoder, info, media_file)
         encode.assert_called_once()
 
     def test_aborts_without_archiving_when_encode_fails(self, media_file, special_dirs):
         encoder = Encoder()
-        info = self._file_info(media_file, shall_encode=True)
-        _, optimize, archive, cleanup = self._process(encoder, info, media_file, encode={"return_value": False})
+        info = self._file_info(media_file, video_shall_encode=True)
+        result, _, optimize, archive, cleanup = self._process(encoder, info, media_file, encode={"return_value": False})
+        assert result is False
         optimize.assert_not_called()
         archive.assert_not_called()
         cleanup.assert_called_once()
 
     def test_aborts_without_archiving_when_optimize_fails(self, media_file, special_dirs):
         encoder = Encoder()
-        info = self._file_info(media_file, shall_encode=True)
-        _, _, archive, cleanup = self._process(encoder, info, media_file, optimize={"return_value": False})
+        info = self._file_info(media_file, video_shall_encode=True)
+        result, _, _, archive, cleanup = self._process(encoder, info, media_file, optimize={"return_value": False})
+        assert result is False
         archive.assert_not_called()
         cleanup.assert_called_once()
 
     def test_cleans_up_workdirs_even_when_a_step_raises(self, media_file, special_dirs):
         encoder = Encoder()
-        info = self._file_info(media_file, shall_encode=True)
+        info = self._file_info(media_file, video_shall_encode=True)
         with (
             patch.object(Analyzer, "analyze", return_value=info),
             patch.object(encoder, "_encode", side_effect=RuntimeError("boom")),
@@ -374,11 +366,6 @@ class TestEncoderProcess:
         assert encoder._processing_file is None
 
 
-# ---------------------------------------------------------------------------
-# Encoder._encode
-# ---------------------------------------------------------------------------
-
-
 class TestEncoderEncode:
     def _encoder(self, media_file: Path, **kwargs) -> Encoder:
         encoder = Encoder()
@@ -386,7 +373,9 @@ class TestEncoderEncode:
             media_file,
             is_valid=kwargs.get("is_valid", True),
             duration=100,
-            video_stream=VideoStream(codec="h264", bitrate=kwargs.get("video_bitrate", 5000)),
+            video_stream=VideoStream(
+                codec="h264", bitrate=kwargs.get("video_bitrate", 5000), shall_encode=kwargs.get("encode_video", True)
+            ),
             audio_streams=kwargs.get("audio_streams", [AudioStream(codec="aac", channels=2, channel_bitrate=128)]),
         )
         return encoder
@@ -457,17 +446,44 @@ class TestEncoderEncode:
             encoder._encode()
         assert mock_cmd.call_args.args[4] == 384  # 64 * 6
 
+    def test_unknown_source_bitrates_fall_back_to_targets(self, media_file, special_dirs, location_config):
+        location_config.target_video_bitrate = 2250
+        location_config.target_audio_channel_bitrate = 64
+        encoder = self._encoder(
+            media_file, video_bitrate=0, audio_streams=[AudioStream(codec="aac", channels=2, channel_bitrate=0)]
+        )
+        with (
+            patch("baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]),
+            patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
+        ):
+            encoder._encode()
+        assert mock_cmd.call_args.args[3:] == (2250, 128)
+
+    def test_copies_video_when_only_audio_needs_encoding(self, media_file, special_dirs):
+        encoder = self._encoder(media_file, encode_video=False)
+        with (
+            patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()) as mock_popen,
+            patch("baycone.encoding.ffmpeg.get_cmd_encode_audio", return_value=["ffmpeg"]) as mock_cmd,
+        ):
+            assert encoder._encode() is True
+        assert mock_popen.call_count == 1
+        assert mock_cmd.call_args.args[2] == 128  # min(128 * 2, 64 * 2)
+
+    def test_kills_ffmpeg_when_interrupted(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        process = make_popen_mock()
+        process.stdout = MagicMock(__iter__=MagicMock(side_effect=KeyboardInterrupt))
+        with patch("baycone.encoding.subprocess.Popen", return_value=process):
+            with pytest.raises(KeyboardInterrupt):
+                encoder._encode()
+        process.kill.assert_called_once()
+
     def test_logs_progress_without_dividing_by_zero_duration(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
         encoder._processing_file.duration = 0
         progress = make_popen_mock(lines=["out_time_us=5000000\n", "progress=continue\n"])
         with patch("baycone.encoding.subprocess.Popen", side_effect=[progress, make_popen_mock()]):
             assert encoder._encode() is True
-
-
-# ---------------------------------------------------------------------------
-# Encoder._optimize
-# ---------------------------------------------------------------------------
 
 
 class TestEncoderOptimize:
@@ -515,11 +531,6 @@ class TestEncoderOptimize:
         ):
             encoder._optimize(encoded=True)
         assert mock_cmd.call_args.args[0] == encoder._processing_file.encoding_path
-
-
-# ---------------------------------------------------------------------------
-# Encoder._archive_original / directory pruning
-# ---------------------------------------------------------------------------
 
 
 class TestArchiveOriginal:
@@ -586,11 +597,6 @@ class TestArchiveOriginal:
     def test_never_removes_the_location_root(self, media_file, location_dir, special_dirs):
         self._encoder(media_file)._archive_original()
         assert location_dir.is_dir()
-
-
-# ---------------------------------------------------------------------------
-# Encoder._cleanup_workdirs
-# ---------------------------------------------------------------------------
 
 
 class TestCleanupWorkdirs:

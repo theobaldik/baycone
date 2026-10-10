@@ -12,26 +12,24 @@ participant "Encoder" as encoder
 
 activate service
 
-loop until stopped
+loop until stopped (SIGTERM / Ctrl+C)
     loop for each watched location
         service -> watcher : get_new_file()
         activate watcher
 
-        watcher -> config : load_config_override(location_config)
-        activate config
-        config --> watcher : overrides applied
-        deactivate config
+        opt override file mtime changed
+            watcher -> config : load_config_override(location_config, base)
+            activate config
+            config --> watcher : reset to base, override applied
+            deactivate config
+        end
 
-        watcher -> watcher : rglob, skip special dirs,\nfilter by allowed_extensions
+        watcher -> watcher : walk, prune special dirs,\nfilter by allowed_extensions
+        watcher -> watcher : record size + mtime of every file
 
-        alt candidate found
-            watcher -> watcher : _is_file_locked(file)
-            alt file is locked
-                watcher --> service : None
-            else file is stable
-                watcher --> service : file_path
-            end
-        else nothing to do
+        alt file unchanged since previous scan\nand not failed in this state
+            watcher --> service : file_path
+        else new, still being written or failed
             watcher --> service : None
         end
         deactivate watcher
@@ -41,12 +39,19 @@ loop until stopped
             activate encoder
             encoder -> encoder : analyze, encode,\noptimize, archive
             note right: See encoding_sequence.puml
-            encoder --> service : done
+            encoder --> service : succeeded
             deactivate encoder
+
+            opt failed or raised
+                service -> watcher : mark_failed(file_path)
+                note right: Skipped until the file is modified.
+            end
         end
     end
 
-    service -> service : sleep(poll_interval)
+    opt no file picked up
+        service -> service : sleep(poll_interval)
+    end
 end
 
 deactivate service
