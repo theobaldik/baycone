@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baycone.audio import AudioStream, AudioTrack
 from baycone.config import SpecialDirs
-from baycone.encoding import Analyzer, AudioStream, Encoder, FileInfo, VideoStream
+from baycone.encoding import Analyzer, Encoder, FileInfo, VideoStream
 
 
 def make_ffprobe_output(
@@ -18,6 +19,7 @@ def make_ffprobe_output(
     audio_bitrate: int = 128_000,
     audio_channels: int = 2,
     audio_lang: str = "eng",
+    audio_disposition: dict[str, int] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -34,6 +36,7 @@ def make_ffprobe_output(
                     "bit_rate": str(audio_bitrate),
                     "channels": audio_channels,
                     "tags": {"language": audio_lang},
+                    "disposition": audio_disposition or {},
                 },
             ],
         }
@@ -64,27 +67,6 @@ def media_file(location_dir) -> Path:
 def analyze(file_path: Path, ffprobe_output: str, method=Analyzer.analyze) -> FileInfo:
     with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=ffprobe_output)):
         return method(file_path)
-
-
-class TestAudioStream:
-    @pytest.mark.parametrize(
-        "channels,expected",
-        [
-            (1, "Mono"),
-            (2, "Stereo"),
-            (3, "Stereo 2.1"),
-            (6, "Surround 5.1"),
-            (8, "Surround 7.1"),
-            (9, "Surround 7.2"),
-            (0, ""),
-            (99, ""),
-        ],
-    )
-    def test_generate_track_name(self, channels, expected):
-        assert AudioStream(channels=channels).generate_track_name() == expected
-
-    def test_overall_bitrate_is_per_channel_times_channels(self):
-        assert AudioStream(channel_bitrate=64, channels=6).overall_bitrate == 384
 
 
 class TestFileInfoPaths:
@@ -196,8 +178,36 @@ class TestGetFileInfo:
         info = self._info(media_file, audio_bitrate=192_000, audio_channels=2)
         assert info.audio_streams[0].channel_bitrate == 96  # 192000 // 1000 // 2
 
-    def test_audio_language_extracted(self, media_file):
-        assert self._info(media_file, audio_lang="cze").audio_streams[0].lang == "cze"
+    def test_audio_language_normalized_to_terminology_code(self, media_file):
+        assert self._info(media_file, audio_lang="cze").audio_streams[0].lang == "ces"
+
+    def test_missing_audio_language_is_undefined(self, media_file):
+        assert self._info(media_file, audio_lang="").audio_streams[0].lang == "und"
+
+    def test_audio_streams_are_indexed_among_audio_only(self, media_file):
+        payload = json.dumps(
+            {
+                "format": {"format_name": "mp4", "duration": "100.0"},
+                "streams": [
+                    {"codec_type": "video", "codec_name": "h264"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 2},
+                    {"codec_type": "subtitle", "codec_name": "mov_text"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 6},
+                ],
+            }
+        )
+        info = analyze(media_file, payload, method=Analyzer._get_file_info)
+        assert [s.index for s in info.audio_streams] == [0, 1]
+
+    def test_original_disposition_extracted(self, media_file):
+        assert self._info(media_file, audio_disposition={"original": 1}).audio_streams[0].original is True
+
+    @pytest.mark.parametrize("disposition", ["comment", "visual_impaired", "descriptions", "hearing_impaired"])
+    def test_special_disposition_extracted(self, media_file, disposition):
+        assert self._info(media_file, audio_disposition={disposition: 1}).audio_streams[0].special is True
+
+    def test_dub_is_not_special(self, media_file):
+        assert self._info(media_file, audio_disposition={"dub": 1, "default": 1}).audio_streams[0].special is False
 
     def test_unknown_values_default_to_zero(self, media_file):
         payload = json.dumps(
@@ -272,6 +282,15 @@ class TestAnalyze:
         info = self._analyze(media_file, audio_bitrate=256_000, audio_channels=2)
         assert info.audio_streams[0].shall_encode is True
 
+    def test_selects_audio_tracks(self, media_file):
+        info = self._analyze(media_file)
+        assert [t.stream for t in info.audio_tracks] == info.audio_streams
+
+    def test_selected_track_needing_encode_gets_a_bitrate(self, media_file, location_config):
+        location_config.target_audio_channel_bitrate = 64
+        info = self._analyze(media_file, audio_codec="ac3", audio_bitrate=448_000, audio_channels=6)
+        assert info.audio_tracks[0].bitrate == 384
+
 
 class TestEncoderProcess:
     def _file_info(self, media_file: Path, **kwargs) -> FileInfo:
@@ -281,7 +300,9 @@ class TestEncoderProcess:
             duration=100,
             containers=["mp4"],
             video_stream=VideoStream(codec="h264", bitrate=2000, shall_encode=kwargs.get("video_shall_encode", False)),
-            audio_streams=[AudioStream(codec="aac", channels=2, shall_encode=kwargs.get("audio_shall_encode", False))],
+            audio_tracks=[
+                AudioTrack(AudioStream(codec="aac", channels=2, shall_encode=kwargs.get("audio_shall_encode", False)))
+            ],
             shall_remux=kwargs.get("shall_remux", False),
         )
 
@@ -331,6 +352,14 @@ class TestEncoderProcess:
         _, encode, _, _, _ = self._process(encoder, info, media_file)
         encode.assert_called_once()
 
+    def test_dropped_audio_streams_never_trigger_encode(self, media_file, special_dirs):
+        encoder = Encoder()
+        info = self._file_info(media_file)
+        info.audio_streams = [AudioStream(codec="dts", shall_encode=True)]
+        _, encode, optimize, _, _ = self._process(encoder, info, media_file)
+        encode.assert_not_called()
+        optimize.assert_called_once_with(False)
+
     def test_aborts_without_archiving_when_encode_fails(self, media_file, special_dirs):
         encoder = Encoder()
         info = self._file_info(media_file, video_shall_encode=True)
@@ -376,7 +405,7 @@ class TestEncoderEncode:
             video_stream=VideoStream(
                 codec="h264", bitrate=kwargs.get("video_bitrate", 5000), shall_encode=kwargs.get("encode_video", True)
             ),
-            audio_streams=kwargs.get("audio_streams", [AudioStream(codec="aac", channels=2, channel_bitrate=128)]),
+            audio_tracks=kwargs.get("audio_tracks", [AudioTrack(AudioStream(codec="aac", channels=2), bitrate=128)]),
         )
         return encoder
 
@@ -399,8 +428,8 @@ class TestEncoderEncode:
             assert encoder._encode() is False
         mock_popen.assert_not_called()
 
-    def test_returns_false_when_no_audio_streams(self, media_file, special_dirs):
-        encoder = self._encoder(media_file, audio_streams=[])
+    def test_returns_false_when_no_audio_tracks(self, media_file, special_dirs):
+        encoder = self._encoder(media_file, audio_tracks=[])
         with patch("baycone.encoding.subprocess.Popen") as mock_popen:
             assert encoder._encode() is False
         mock_popen.assert_not_called()
@@ -436,28 +465,24 @@ class TestEncoderEncode:
             encoder._encode()
         assert mock_cmd.call_args.args[3] == 800
 
-    def test_audio_bitrate_is_per_channel_times_channels(self, media_file, special_dirs, location_config):
-        location_config.target_audio_channel_bitrate = 64
-        encoder = self._encoder(media_file, audio_streams=[AudioStream(codec="aac", channels=6, channel_bitrate=128)])
+    def test_passes_the_selected_audio_tracks(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
         with (
             patch("baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]),
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[4] == 384  # 64 * 6
+        assert mock_cmd.call_args.args[4] == encoder._processing_file.audio_tracks
 
-    def test_unknown_source_bitrates_fall_back_to_targets(self, media_file, special_dirs, location_config):
+    def test_unknown_source_video_bitrate_falls_back_to_target(self, media_file, special_dirs, location_config):
         location_config.target_video_bitrate = 2250
-        location_config.target_audio_channel_bitrate = 64
-        encoder = self._encoder(
-            media_file, video_bitrate=0, audio_streams=[AudioStream(codec="aac", channels=2, channel_bitrate=0)]
-        )
+        encoder = self._encoder(media_file, video_bitrate=0)
         with (
             patch("baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]),
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[3:] == (2250, 128)
+        assert mock_cmd.call_args.args[3] == 2250
 
     def test_copies_video_when_only_audio_needs_encoding(self, media_file, special_dirs):
         encoder = self._encoder(media_file, encode_video=False)
@@ -467,7 +492,7 @@ class TestEncoderEncode:
         ):
             assert encoder._encode() is True
         assert mock_popen.call_count == 1
-        assert mock_cmd.call_args.args[2] == 128  # min(128 * 2, 64 * 2)
+        assert mock_cmd.call_args.args[2] == encoder._processing_file.audio_tracks
 
     def test_kills_ffmpeg_when_interrupted(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
@@ -487,13 +512,13 @@ class TestEncoderEncode:
 
 
 class TestEncoderOptimize:
-    def _encoder(self, media_file: Path, audio_streams=None) -> Encoder:
+    def _encoder(self, media_file: Path, audio_tracks: list[AudioTrack] | None = None) -> Encoder:
         encoder = Encoder()
         encoder._processing_file = FileInfo(
             media_file,
             is_valid=True,
             duration=100,
-            audio_streams=[AudioStream(codec="aac", channels=2)] if audio_streams is None else audio_streams,
+            audio_tracks=[AudioTrack(AudioStream(codec="aac", channels=2))] if audio_tracks is None else audio_tracks,
         )
         return encoder
 
@@ -502,8 +527,8 @@ class TestEncoderOptimize:
         with patch("baycone.encoding.subprocess.run", return_value=MagicMock(returncode=0)):
             assert encoder._optimize(encoded=False) is True
 
-    def test_returns_false_when_no_audio_streams(self, media_file, special_dirs):
-        encoder = self._encoder(media_file, audio_streams=[])
+    def test_returns_false_when_no_audio_tracks(self, media_file, special_dirs):
+        encoder = self._encoder(media_file, audio_tracks=[])
         assert encoder._optimize(encoded=False) is False
 
     def test_returns_false_on_ffmpeg_failure(self, media_file, special_dirs):
@@ -531,6 +556,7 @@ class TestEncoderOptimize:
         ):
             encoder._optimize(encoded=True)
         assert mock_cmd.call_args.args[0] == encoder._processing_file.encoding_path
+        assert mock_cmd.call_args.args[2:] == (encoder._processing_file.audio_tracks, True)
 
 
 class TestArchiveOriginal:

@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 
+from baycone.audio import AudioTrack
 from baycone.config import config
+
+# Spliced in place of this element, one argument group per output audio track
+AUDIO_ARGS = "{audio_args}"
 
 # TODO: Find out which parameters are really necessary and optimize them for both passes
 X264_PARAMS_MOVIE_PASS_1 = [
@@ -79,8 +83,6 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
     os.devnull,
 ]
 
-# TODO: Remove metadata and add audio track metadata
-# TODO: Handle multiple audio tracks
 CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "{ffmpeg}",
     "-hide_banner",
@@ -104,12 +106,7 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "{video_bitrate}k",
     "-pass",
     "2",
-    "-map",
-    "0:a:0",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "{audio_bitrate}k",
+    AUDIO_ARGS,
     "-movflags",
     "+faststart",
     "-max_interleave_delta",
@@ -131,14 +128,9 @@ CMD_FFMPEG_ENCODE_AUDIO = [
     "{input_file}",
     "-map",
     "0:v:0",
-    "-map",
-    "0:a:0",
+    AUDIO_ARGS,
     "-c:v",
     "copy",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "{audio_bitrate}k",
     "-progress",
     "pipe:1",
     "{output_file}",
@@ -155,19 +147,26 @@ CMD_FFMPEG_OPTIMIZE = [
     "{input_file}",
     "-map",
     "0:v",
-    "-map",
-    "0:a",
     "-c",
     "copy",
     "-map_metadata",
     "-1",
-    "-metadata:s:a:0",
-    "language={language}",
-    "-metadata:s:a:0",
-    "title={track_name}",
+    AUDIO_ARGS,
     "-movflags",
     "+faststart",
     "{output_file}",
+]
+
+ARGS_AUDIO_MAP = ["-map", "0:a:{source}"]
+ARGS_AUDIO_COPY = ["-c:a:{output}", "copy"]
+ARGS_AUDIO_ENCODE = ["-c:a:{output}", "aac", "-b:a:{output}", "{bitrate}k"]
+ARGS_AUDIO_METADATA = [
+    "-metadata:s:a:{output}",
+    "language={language}",
+    "-metadata:s:a:{output}",
+    "title={title}",
+    "-disposition:a:{output}",
+    "{disposition}",
 ]
 
 CMD_FFPROBE = [
@@ -182,21 +181,49 @@ CMD_FFPROBE = [
 ]
 
 
-def get_cmd_encode_movie_pass_1(
-    input_file: Path,
-    passlog_file: Path,
-    video_bitrate: int,
-) -> list[str]:
-    cmd = [
-        arg.format(
-            ffmpeg=config.ffmpeg_path,
-            input_file=input_file.absolute(),
-            passlog_file=passlog_file.absolute(),
-            video_bitrate=video_bitrate,
-        )
-        for arg in CMD_FFMPEG_ENCODE_MOVIE_PASS_1
-    ]
+def _render(template: list[str], audio_args: list[str] | None = None, **values: object) -> list[str]:
+    cmd = []
+    for arg in template:
+        if arg == AUDIO_ARGS:
+            cmd.extend(audio_args or [])
+        else:
+            cmd.append(arg.format(ffmpeg=config.ffmpeg_path, ffprobe=config.ffprobe_path, **values))
     return cmd
+
+
+def _audio_encode_args(audio_tracks: list[AudioTrack]) -> list[str]:
+    args = []
+    for output, track in enumerate(audio_tracks):
+        args += _render(ARGS_AUDIO_MAP, source=track.stream.index)
+        if track.bitrate:
+            args += _render(ARGS_AUDIO_ENCODE, output=output, bitrate=track.bitrate)
+        else:
+            args += _render(ARGS_AUDIO_COPY, output=output)
+    return args
+
+
+def _audio_metadata_args(audio_tracks: list[AudioTrack], encoded: bool) -> list[str]:
+    """An encoded file already holds just `audio_tracks`, in output order."""
+    args = []
+    for output, track in enumerate(audio_tracks):
+        args += _render(ARGS_AUDIO_MAP, source=output if encoded else track.stream.index)
+        args += _render(
+            ARGS_AUDIO_METADATA,
+            output=output,
+            language=track.stream.lang,
+            title=track.title,
+            disposition=track.disposition,
+        )
+    return args
+
+
+def get_cmd_encode_movie_pass_1(input_file: Path, passlog_file: Path, video_bitrate: int) -> list[str]:
+    return _render(
+        CMD_FFMPEG_ENCODE_MOVIE_PASS_1,
+        input_file=input_file.absolute(),
+        passlog_file=passlog_file.absolute(),
+        video_bitrate=video_bitrate,
+    )
 
 
 def get_cmd_encode_movie_pass_2(
@@ -204,53 +231,35 @@ def get_cmd_encode_movie_pass_2(
     output_file: Path,
     passlog_file: Path,
     video_bitrate: int,
-    audio_bitrate: int,
+    audio_tracks: list[AudioTrack],
 ) -> list[str]:
-    cmd = [
-        arg.format(
-            ffmpeg=config.ffmpeg_path,
-            input_file=input_file.absolute(),
-            output_file=output_file.absolute(),
-            passlog_file=passlog_file.absolute(),
-            video_bitrate=video_bitrate,
-            audio_bitrate=audio_bitrate,
-        )
-        for arg in CMD_FFMPEG_ENCODE_MOVIE_PASS_2
-    ]
-    return cmd
+    return _render(
+        CMD_FFMPEG_ENCODE_MOVIE_PASS_2,
+        _audio_encode_args(audio_tracks),
+        input_file=input_file.absolute(),
+        output_file=output_file.absolute(),
+        passlog_file=passlog_file.absolute(),
+        video_bitrate=video_bitrate,
+    )
 
 
-def get_cmd_encode_audio(input_file: Path, output_file: Path, audio_bitrate: int) -> list[str]:
-    return [
-        arg.format(
-            ffmpeg=config.ffmpeg_path,
-            input_file=input_file.absolute(),
-            output_file=output_file.absolute(),
-            audio_bitrate=audio_bitrate,
-        )
-        for arg in CMD_FFMPEG_ENCODE_AUDIO
-    ]
+def get_cmd_encode_audio(input_file: Path, output_file: Path, audio_tracks: list[AudioTrack]) -> list[str]:
+    return _render(
+        CMD_FFMPEG_ENCODE_AUDIO,
+        _audio_encode_args(audio_tracks),
+        input_file=input_file.absolute(),
+        output_file=output_file.absolute(),
+    )
 
 
-def get_cmd_optimize(
-    input_file: Path,
-    output_file: Path,
-    language: str,
-    track_name: str,
-) -> list[str]:
-    cmd = [
-        arg.format(
-            ffmpeg=config.ffmpeg_path,
-            input_file=input_file.absolute(),
-            output_file=output_file.absolute(),
-            language=language,
-            track_name=track_name,
-        )
-        for arg in CMD_FFMPEG_OPTIMIZE
-    ]
-    return cmd
+def get_cmd_optimize(input_file: Path, output_file: Path, audio_tracks: list[AudioTrack], encoded: bool) -> list[str]:
+    return _render(
+        CMD_FFMPEG_OPTIMIZE,
+        _audio_metadata_args(audio_tracks, encoded),
+        input_file=input_file.absolute(),
+        output_file=output_file.absolute(),
+    )
 
 
 def get_cmd_ffprobe(input_file: Path) -> list[str]:
-    cmd = [arg.format(ffprobe=config.ffprobe_path, input_file=input_file.absolute()) for arg in CMD_FFPROBE]
-    return cmd
+    return _render(CMD_FFPROBE, input_file=input_file.absolute())

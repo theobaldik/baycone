@@ -34,11 +34,12 @@ file_info --> analyzer : file_info
 deactivate file_info
 
 analyzer -> analyzer : flag shall_encode per video / audio stream,\nshall_remux for the container
+analyzer -> analyzer : select_audio_tracks()\noriginal language first, then preferred ones
 analyzer --> encoder : file_info
 deactivate analyzer
 
-alt video or audio shall encode
-    encoder -> encoder : cap bitrates at target,\ntarget when source is unknown
+alt video or selected audio shall encode
+    encoder -> encoder : cap video bitrate at target,\ntarget when source is unknown
 
     alt video shall encode
         encoder -> cmd : get_cmd_encode_movie_pass_1(...)

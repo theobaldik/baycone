@@ -96,8 +96,8 @@ class DefaultsConfig(Serializable):
 
     target_audio_codec: str = "aac"
     target_audio_channel_bitrate: int = 64
-    # TODO: Not honoured until multitrack audio is implemented
     target_audio_languages: list[str] = field(default_factory=lambda: ["eng", "cze"])
+    target_audio_channels: int = 2
 
     limit_video_bitrate: int = 2800
     limit_audio_channel_bitrate: int = 96

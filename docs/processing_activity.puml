@@ -31,9 +31,11 @@ endif
 note right
     ""ffprobe"" - container, codecs,
     bitrates, channels, duration.
+    Select audio tracks: original language
+    first, then the preferred ones.
 end note
 
-if (video or audio outside limits) then (yes)
+if (video or selected audio outside limits) then (yes)
     if (video outside limits) then (yes)
         :Encode File 1<sup>st</sup> Pass;
         note right: "".baycone/passlogfiles/<relative path>""
@@ -53,13 +55,13 @@ if (video or audio outside limits) then (yes)
         stop
     endif
 else (no)
-    note right: A container mismatch alone is fixed by the remux below.
+    note right: A container mismatch or dropped audio tracks alone are fixed by the remux below.
 endif
 
 :Optimize File;
 note right
     Remux with ""-c copy"", strip metadata,
-    tag the audio track and move the moov
+    tag the audio tracks and move the moov
     atom to the front (""+faststart"").
 end note
 

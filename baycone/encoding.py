@@ -7,20 +7,17 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from baycone import ffmpeg
+from baycone.audio import (
+    SPECIAL_DISPOSITIONS,
+    AudioStream,
+    AudioTrack,
+    cap_bitrate,
+    normalize_language,
+    select_audio_tracks,
+)
 from baycone.config import config, LocationConfig, SpecialDirs
 
 log = logging.getLogger(__name__)
-
-DEFAULT_AUDIO_LANGUAGE = "eng"
-
-TRACK_NAMES: dict[int, str] = {
-    1: "Mono",
-    2: "Stereo",
-    3: "Stereo 2.1",
-    6: "Surround 5.1",
-    8: "Surround 7.1",
-    9: "Surround 7.2",
-}
 
 
 def _parse_number(value: object) -> float:
@@ -38,23 +35,6 @@ class VideoStream:
     bitrate: int = 0
 
 
-@dataclass
-class AudioStream:
-    shall_encode: bool = False
-    codec: str = ""
-    channel_bitrate: int = 0
-    channels: int = 0
-    lang: str = ""
-    title: str = ""
-
-    @property
-    def overall_bitrate(self) -> int:
-        return self.channel_bitrate * self.channels
-
-    def generate_track_name(self) -> str:
-        return TRACK_NAMES.get(self.channels, "")
-
-
 class FileInfo:
     def __init__(self, file_path: Path, **kwargs):
         self._file_path: Path = None
@@ -69,6 +49,7 @@ class FileInfo:
 
         self.video_stream: VideoStream = kwargs.get("video_stream", VideoStream())
         self.audio_streams: list[AudioStream] = kwargs.get("audio_streams", [])
+        self.audio_tracks: list[AudioTrack] = kwargs.get("audio_tracks", [])
 
         self.file_path = file_path
 
@@ -174,8 +155,8 @@ class Analyzer:
             file_info.video_stream.bitrate = Analyzer._get_bitrate(video)
 
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
-        for stream in audio_streams:
-            audio_stream = AudioStream()
+        for index, stream in enumerate(audio_streams):
+            audio_stream = AudioStream(index=index)
 
             audio_stream.codec = stream.get("codec_name", "")
             audio_stream.channels = int(_parse_number(stream.get("channels", 1)))
@@ -183,7 +164,11 @@ class Analyzer:
                 audio_stream.channel_bitrate = Analyzer._get_bitrate(stream) // audio_stream.channels
 
             tags = stream.get("tags", {})
-            audio_stream.lang = tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", "")
+            audio_stream.lang = normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", ""))
+
+            disposition = stream.get("disposition", {})
+            audio_stream.original = bool(disposition.get("original"))
+            audio_stream.special = any(disposition.get(name) for name in SPECIAL_DISPOSITIONS)
 
             file_info.audio_streams.append(audio_stream)
 
@@ -208,6 +193,8 @@ class Analyzer:
             if stream.channels > 0 and stream.channel_bitrate > location_config.limit_audio_channel_bitrate:
                 stream.shall_encode = True
 
+        file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, location_config)
+
         return file_info
 
 
@@ -220,9 +207,9 @@ class Encoder:
         self._processing_file = Analyzer.analyze(file_path)
 
         try:
-            # A container mismatch alone is fixed by the remux in `_optimize`
+            # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
             shall_encode = self._processing_file.video_stream.shall_encode or any(
-                s.shall_encode for s in self._processing_file.audio_streams
+                t.stream.shall_encode for t in self._processing_file.audio_tracks
             )
             if not shall_encode and self._processing_file.shall_remux:
                 log.info(f"Only the container differs, remuxing '{file_path}'")
@@ -270,11 +257,6 @@ class Encoder:
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, cmd)
 
-    @staticmethod
-    def _cap_bitrate(source: int, target: int) -> int:
-        """Never upscales, falls back to `target` when the source bitrate is unknown."""
-        return min(source, target) if source > 0 else target
-
     def _encode(self) -> bool:
         file_info = self._processing_file
 
@@ -282,17 +264,11 @@ class Encoder:
             log.error(f"Encoding skipped: Invalid file for encoding: '{file_info.file_path}'")
             return False
 
-        if not file_info.audio_streams:
+        if not file_info.audio_tracks:
             log.error(f"Encoding skipped: No audio streams found in '{file_info.file_path}'")
             return False
 
-        location_config = file_info.location_config
-        # TODO: Implement multitrack audio
-        audio_stream = file_info.audio_streams[0]
-        audio_bitrate = self._cap_bitrate(
-            audio_stream.overall_bitrate, location_config.target_audio_channel_bitrate * audio_stream.channels
-        )
-        video_bitrate = self._cap_bitrate(file_info.video_stream.bitrate, location_config.target_video_bitrate)
+        video_bitrate = cap_bitrate(file_info.video_stream.bitrate, file_info.location_config.target_video_bitrate)
 
         file_info.encoding_path.parent.mkdir(parents=True, exist_ok=True)
         file_info.encoding_path.unlink(missing_ok=True)
@@ -306,12 +282,16 @@ class Encoder:
                 log.info("1st pass encoding finished")
 
                 cmd = ffmpeg.get_cmd_encode_movie_pass_2(
-                    file_info.file_path, file_info.encoding_path, file_info.passlog_path, video_bitrate, audio_bitrate
+                    file_info.file_path,
+                    file_info.encoding_path,
+                    file_info.passlog_path,
+                    video_bitrate,
+                    file_info.audio_tracks,
                 )
                 self._run_ffmpeg(cmd, "Encoding 2nd pass: {percent} %")
             else:
                 log.info("Encoding audio, copying video...")
-                cmd = ffmpeg.get_cmd_encode_audio(file_info.file_path, file_info.encoding_path, audio_bitrate)
+                cmd = ffmpeg.get_cmd_encode_audio(file_info.file_path, file_info.encoding_path, file_info.audio_tracks)
                 self._run_ffmpeg(cmd, "Encoding audio: {percent} %")
 
             log.info(f"Encoded file saved to '{file_info.encoding_path}'")
@@ -323,20 +303,16 @@ class Encoder:
         return False
 
     def _optimize(self, encoded: bool) -> bool:
-        if not self._processing_file.audio_streams:
+        if not self._processing_file.audio_tracks:
             log.error(f"Optimizing skipped: No audio streams found in '{self._processing_file.file_path}'")
             return False
-
-        # TODO: Implement multitrack audio and honour 'location_config.target_audio_languages'
-        language = DEFAULT_AUDIO_LANGUAGE
-        track_name = self._processing_file.audio_streams[0].generate_track_name()
 
         self._processing_file.processed_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = ffmpeg.get_cmd_optimize(
             self._processing_file.encoding_path if encoded else self._processing_file.file_path,
             self._processing_file.processed_path,
-            language,
-            track_name,
+            self._processing_file.audio_tracks,
+            encoded,
         )
 
         try:

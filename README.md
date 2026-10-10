@@ -11,7 +11,9 @@ plain MP4 that any player handles.
 - Watches multiple directories for new video files (configurable poll interval)
 - Transcodes to **h264 / AAC** MP4 using a two-pass `libx264` encode
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
-- Strips all metadata and tags the audio track with its language and channel layout
+- Keeps the original audio language plus your preferred languages, one track per language at the preferred channel
+  count, and drops the rest
+- Strips all metadata and tags every audio track with its language and channel layout
 - Skips files that already meet the target codec / container / bitrate requirements, only remuxes files whose
   container alone differs, and copies the video stream when only the audio needs re-encoding
 - Waits for files that are still being copied in, and never touches the original until the encoded result has been
@@ -21,9 +23,11 @@ plain MP4 that any player handles.
 
 ## Limitations
 
-- **Single audio track only.** Only the first audio stream is handled: a re-encoded file keeps just that track, a file
-  that is only remuxed keeps all of them, and the first one is always tagged `eng`. `target_audio_languages` is reserved
-  for this and has no effect yet.
+- Commentary, audio description and other special audio tracks are always dropped. They are recognised by their
+  disposition flags only, so an unflagged one can still be picked as a regular track of its language.
+- MP4 has no "original" track flag — the original language is marked by being the first (default) track. The flag is
+  kept when `target_container` is Matroska.
+- The standalone CLI handles the first audio track only.
 - No subtitle handling.
 
 ## Directory structure
@@ -73,6 +77,8 @@ defaults:
   target_video_bitrate: 2250        # kbps — never upscales above the source bitrate
   target_audio_codec: aac
   target_audio_channel_bitrate: 64  # kbps per channel
+  target_audio_languages: [ eng, cze ]  # kept after the original language, in this order
+  target_audio_channels: 2          # preferred channel count per language
 
 locations:
   - path: movies
@@ -82,6 +88,19 @@ locations:
 
 Each location inherits from `defaults` and can override any field individually. See
 [`config.yml.example`](config.yml.example) for a fully commented file.
+
+### Audio tracks
+
+Every other audio track is dropped, so the output holds:
+
+1. The **original language** — the track flagged `original`, otherwise the first audio track
+2. One track for each language in `target_audio_languages` that the file has, in that order
+
+When a language has several tracks, the one with `target_audio_channels` channels wins; without an exact match, the
+fewest channels above it, otherwise the most channels below it. Tracks flagged as commentary, audio description,
+hearing impaired, karaoke or lyrics are never kept. The first track is the default one, and each track is tagged with
+its language and channel layout ("Stereo", "Surround 5.1", ...). Tracks within the limits are copied, the rest are
+re-encoded.
 
 A location can also be reconfigured at runtime without restarting the service by dropping a
 `.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.

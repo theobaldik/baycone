@@ -19,7 +19,7 @@
 
 ## Test status
 
-`uv run pytest` is green (145 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (198 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -41,10 +41,13 @@ Two tests guard against past data-loss/logic bugs — keep them:
   `KeyboardInterrupt` (PID 1 in a container ignores it otherwise), and a running ffmpeg is killed on interruption.
 - `baycone/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()` mutates this
   in-place. Other modules import `from baycone.config import config` and read from it at runtime.
+- `baycone/audio.py` — `AudioStream` (probed), `AudioTrack` (output) and `select_audio_tracks()`, a pure function
+  picking the original language first, then `target_audio_languages`, one track per language by `target_audio_channels`
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
-  `config.ffprobe_path`.
+  `config.ffprobe_path`. The variable-length audio section is spliced in at the `AUDIO_ARGS` element by `_render()`,
+  built per track from the `ARGS_AUDIO_*` templates.
 - `baycone/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into them (they
   grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
   scan — never sleep per file. Failed files are skipped until they change (`mark_failed`).
@@ -72,8 +75,9 @@ logging.
 - Audio bitrate is **per-channel** (`target_audio_channel_bitrate × channels`)
 - `Config → DefaultsConfig → LocationConfig` hierarchy; every location inherits defaults and can override
   (`Config.from_dict` seeds each location with `defaults.to_dict()` before applying its own keys)
-- Audio track language is hardcoded (`DEFAULT_AUDIO_LANGUAGE`); `target_audio_languages` is reserved for the multitrack
-  implementation and is intentionally unused
+- Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` before comparing
+- Special audio tracks (commentary, audio description, ...) are detected by ffprobe disposition only and always dropped;
+  `dub` is not special
 - `FileInfo.file_path` setter auto-resolves `LocationConfig` and `SpecialDirs` from the global `config.locations`
 - Use `deepcopy`/`copy` when returning mutable internal state from properties
 - Docstrings and comments only where the code can't speak for itself (a non-obvious why, invariant or gotcha) —

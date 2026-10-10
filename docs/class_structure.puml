@@ -50,7 +50,6 @@ class Encoder {
     - _cleanup_workdirs()
     - _run_ffmpeg(cmd : list<str>, progress_template : str)
     - _log_progress(process : Popen, template : str)
-    - {static} _cap_bitrate(source : int, target : int) : int
     - {static} _remove_empty_dirs(directory : Path, root_dir : Path)
     - {static} _clear_dir(directory : Path)
 }
@@ -77,14 +76,31 @@ class VideoStream <<dataclass>> {
 }
 
 class AudioStream <<dataclass>> {
+    + index : int
     + shall_encode : bool
     + codec : str
     + channel_bitrate : int
     + channels : int
     + lang : str
     + title : str
+    + original : bool
+    + special : bool
     + overall_bitrate : int
     + generate_track_name() : str
+}
+
+class AudioTrack <<dataclass>> {
+    + stream : AudioStream
+    + bitrate : int
+    + default : bool
+    + title : str
+    + disposition : str
+}
+
+class audio <<module>> {
+    + select_audio_tracks(streams, location_config) : list<AudioTrack>
+    + normalize_language(code : str) : str
+    + cap_bitrate(source : int, target : int) : int
 }
 
 class ffmpeg <<module>> {
@@ -120,6 +136,7 @@ class DefaultsConfig <<dataclass>> {
     + target_audio_codec : str
     + target_audio_channel_bitrate : int
     + target_audio_languages : list<str>
+    + target_audio_channels : int
     + limit_video_bitrate : int
     + limit_audio_channel_bitrate : int
 }
@@ -167,6 +184,13 @@ Analyzer ..> FileInfo : creates
 
 FileInfo *-- VideoStream
 FileInfo *-- "0..*" AudioStream
+FileInfo *-- "0..*" AudioTrack : selected
+AudioTrack --> AudioStream
+
+Analyzer ..> audio : selects tracks
+audio ..> AudioTrack : creates
+audio ..> LocationConfig : reads preferences
+ffmpeg ..> AudioTrack : per-track arguments
 FileInfo --> LocationConfig : resolved from Config
 FileInfo --> SpecialDirs : resolved from Config
 
