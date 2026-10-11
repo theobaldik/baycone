@@ -9,6 +9,8 @@
 - **Format:** `black .` (line-length 120, target `py314`) — configured under `[tool.black]` in `pyproject.toml`, so
   never pass those as flags. Not a declared dev dependency: it resolves from PATH / a global `uv tool` install, not from
   the project venv, so `uv sync` alone does not provide it.
+- **Bump version:** `uvx bump-my-version bump patch|minor|major` — configured under `[tool.bumpversion]` in
+  `pyproject.toml`; preview with `--dry-run -v`. Not a declared dev dependency either
 - **No linter or typecheck** command is configured
 
 ## Requirements
@@ -102,9 +104,13 @@ Only git refs carry the `v` prefix — the same version is written differently p
 | Changelog heading | plain semver                 | `## [0.1.0]` — required by Common Changelog   |
 | Docker image tag  | plain semver                 | `theobaldik/baycone:0.1.0`, `:0.1`, `:latest` |
 
+`project.version` in `pyproject.toml` is the single source of truth. Never edit a version by hand — `bump-my-version`
+rewrites it together with every copy listed under `[tool.bumpversion.files]` (`uv.lock`, `compose.yml`, the `image:`
+lines in `README.md` and `docs/dockerhub-overview.md`). A new file that pins the release version must be added there.
+It neither commits nor tags — update `CHANGELOG.md`, commit, then tag `v<version>` by hand.
+
 Image tags are declared in `compose.yml` under `build.tags` — always fully qualified as `theobaldik/baycone:...`, never
-a bare `baycone:...` (a bare name resolves to `docker.io/library/`, which cannot be pushed) — and have to be bumped
-there as part of a release. The GitLab registry is deprecated and no longer published to.
+a bare `baycone:...` (a bare name resolves to `docker.io/library/`, which cannot be pushed). The GitLab registry is deprecated and no longer published to.
 
 `:latest` must only be pushed for a release from `master`. A patch cut from a `support/v<major>.<minor>.x` branch
 publishes its exact and `major.minor` tags only; moving `:latest` to it would hand every `:latest` user an older

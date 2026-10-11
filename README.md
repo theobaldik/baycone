@@ -242,6 +242,13 @@ Releases are tagged `v0.1.0` / `v1.0.0`, and fixes for a release older than the 
 `support/v1.1.x`-style branch instead of `master`. The `v` prefix belongs to git refs only — Docker image tags use the
 plain version (`theobaldik/baycone:0.1.0`, `:0.1`, `:latest`).
 
+The version lives in [`pyproject.toml`](pyproject.toml) and is bumped everywhere it is repeated (lock file, compose
+image tags, docs) with [bump-my-version](https://github.com/callowayproject/bump-my-version):
+
+```bash
+uvx bump-my-version bump patch   # or minor / major; add --dry-run -v to preview
+```
+
 See [`AGENTS.md`](AGENTS.md) for the full set of project conventions.
 
 ## License

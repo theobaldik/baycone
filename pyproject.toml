@@ -30,3 +30,41 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 
+
+# `uvx bump-my-version bump patch|minor|major` — `project.version` is the source of truth, the files below follow it.
+# Only the published image references are bumped; `0.1.0`-style format examples in the docs are left alone.
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = false
+tag = false
+allow_dirty = true
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "uv.lock"
+search = "name = \"baycone\"\nversion = \"{current_version}\""
+replace = "name = \"baycone\"\nversion = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "compose.yml"
+search = "theobaldik/baycone:{current_version}"
+replace = "theobaldik/baycone:{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "compose.yml"
+search = '"theobaldik/baycone:{current_major}.{current_minor}"'
+replace = '"theobaldik/baycone:{new_major}.{new_minor}"'
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "image: theobaldik/baycone:{current_version}"
+replace = "image: theobaldik/baycone:{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "docs/dockerhub-overview.md"
+search = "image: theobaldik/baycone:{current_version}"
+replace = "image: theobaldik/baycone:{new_version}"
