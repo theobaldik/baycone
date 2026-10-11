@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baycone import ffmpeg
 from baycone.audio import AudioStream, AudioTrack
 from baycone.config import SpecialDirs
 from baycone.encoding import Analyzer, Encoder, FileInfo, VideoStream
@@ -15,6 +16,10 @@ def make_ffprobe_output(
     duration: float = 100.0,
     video_codec: str = "h264",
     video_bitrate: int = 2_000_000,
+    video_width: int = 1920,
+    video_height: int = 1080,
+    video_pix_fmt: str = "yuv420p",
+    video_color_transfer: str = "bt709",
     audio_codec: str = "aac",
     audio_bitrate: int = 128_000,
     audio_channels: int = 2,
@@ -29,6 +34,10 @@ def make_ffprobe_output(
                     "codec_type": "video",
                     "codec_name": video_codec,
                     "bit_rate": str(video_bitrate),
+                    "width": video_width,
+                    "height": video_height,
+                    "pix_fmt": video_pix_fmt,
+                    "color_transfer": video_color_transfer,
                 },
                 {
                     "codec_type": "audio",
@@ -209,6 +218,25 @@ class TestGetFileInfo:
     def test_dub_is_not_special(self, media_file):
         assert self._info(media_file, audio_disposition={"dub": 1, "default": 1}).audio_streams[0].special is False
 
+    def test_video_geometry_and_colour_extracted(self, media_file):
+        video = self._info(
+            media_file,
+            video_width=3840,
+            video_height=2160,
+            video_pix_fmt="yuv420p10le",
+            video_color_transfer="smpte2084",
+        ).video_stream
+        assert (video.width, video.height, video.pix_fmt, video.color_transfer) == (
+            3840,
+            2160,
+            "yuv420p10le",
+            "smpte2084",
+        )
+        assert video.is_hdr is True
+
+    def test_sdr_is_not_hdr(self, media_file):
+        assert self._info(media_file).video_stream.is_hdr is False
+
     def test_unknown_values_default_to_zero(self, media_file):
         payload = json.dumps(
             {
@@ -313,9 +341,32 @@ class TestEncoderProcess:
             patch.object(encoder, "_optimize", **mocks.get("optimize", {"return_value": True})) as mock_optimize,
             patch.object(encoder, "_archive_original") as mock_archive,
             patch.object(encoder, "_cleanup_workdirs") as mock_cleanup,
+            patch.object(Analyzer, "detect_crop", **mocks.get("detect_crop", {})),
         ):
             result = encoder.process(media_file)
         return result, mock_encode, mock_optimize, mock_archive, mock_cleanup
+
+    def test_detects_black_bars_only_when_the_video_is_encoded(self, media_file, special_dirs):
+        detect = MagicMock()
+        self._process(Encoder(), self._file_info(media_file), media_file, detect_crop={"new": detect})
+        detect.assert_not_called()
+
+    def test_detects_black_bars_when_the_video_is_encoded(self, media_file, special_dirs):
+        detect = MagicMock()
+        info = self._file_info(media_file, video_shall_encode=True)
+        self._process(Encoder(), info, media_file, detect_crop={"new": detect})
+        detect.assert_called_once_with(media_file, info.video_stream)
+
+    def test_logs_a_headline_before_anything_else(self, media_file, special_dirs, caplog):
+        caplog.set_level("INFO")
+        self._process(Encoder(), self._file_info(media_file), media_file)
+        assert caplog.messages[0] == "Processing 'movie.mp4' (0:01:40)"
+
+    def test_invalid_file_is_not_described(self, media_file, special_dirs, caplog):
+        caplog.set_level("INFO")
+        info = FileInfo(media_file, is_valid=False)
+        self._process(Encoder(), info, media_file, encode={"return_value": False})
+        assert not [m for m in caplog.messages if m.startswith(("Processing '", "Video:", "Audio:"))]
 
     def test_skips_encode_when_not_needed(self, media_file, special_dirs):
         encoder = Encoder()
@@ -382,6 +433,7 @@ class TestEncoderProcess:
         info = self._file_info(media_file, video_shall_encode=True)
         with (
             patch.object(Analyzer, "analyze", return_value=info),
+            patch.object(Analyzer, "detect_crop"),
             patch.object(encoder, "_encode", side_effect=RuntimeError("boom")),
             patch.object(encoder, "_cleanup_workdirs") as mock_cleanup,
         ):
@@ -393,6 +445,93 @@ class TestEncoderProcess:
         encoder = Encoder()
         self._process(encoder, self._file_info(media_file), media_file)
         assert encoder._processing_file is None
+
+
+class TestVideoEncodeDecision:
+    def _video(self, media_file: Path, **kwargs) -> VideoStream:
+        return analyze(media_file, make_ffprobe_output(**kwargs)).video_stream
+
+    def test_copied_when_within_limits(self, media_file):
+        assert self._video(media_file).shall_encode is False
+
+    def test_encoded_when_bitrate_is_unknown(self, media_file):
+        assert self._video(media_file, video_bitrate=0).shall_encode is True
+
+    def test_encoded_when_10_bit(self, media_file):
+        assert self._video(media_file, video_pix_fmt="yuv420p10le").shall_encode is True
+
+    def test_encoded_when_taller_than_the_limit(self, media_file):
+        assert self._video(media_file, video_width=3840, video_height=2160).shall_encode is True
+
+    def test_encoded_when_wider_than_the_box(self, media_file):
+        assert self._video(media_file, video_width=2560, video_height=1080).shall_encode is True
+
+    def test_limit_follows_the_config(self, media_file, location_config):
+        location_config.limit_video_height = 720
+        assert self._video(media_file).shall_encode is True
+
+    def test_audio_encoded_when_bitrate_is_unknown(self, media_file):
+        info = analyze(media_file, make_ffprobe_output(audio_bitrate=0))
+        assert info.audio_streams[0].shall_encode is True
+
+
+class TestDetectCrop:
+    STDERR = "[Parsed_cropdetect_0] x1:0 x2:1919 y1:140 y2:939 w:1920 h:800 x:0 y:140 crop=1920:800:0:140\n"
+
+    def _video(self, media_file: Path, stderr: str = STDERR, **kwargs) -> VideoStream:
+        video = VideoStream(width=1920, height=1080)
+        with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stderr=stderr), **kwargs):
+            Analyzer.detect_crop(media_file, video)
+        return video
+
+    def test_crops_letterbox(self, media_file):
+        video = self._video(media_file)
+        assert (video.crop_height, video.crop_top) == (800, 140)
+
+    def test_uses_the_last_report(self, media_file):
+        video = self._video(media_file, "crop=1920:700:0:190\n" + self.STDERR)
+        assert video.crop_height == 800
+
+    def test_full_height_is_no_crop(self, media_file):
+        assert self._video(media_file, "crop=1920:1080:0:0\n").crop_height == 0
+
+    def test_no_report_is_no_crop(self, media_file):
+        assert self._video(media_file, "").crop_height == 0
+
+    def test_failure_is_no_crop(self, media_file):
+        video = self._video(media_file, side_effect=subprocess.CalledProcessError(1, "ffmpeg", stderr="boom"))
+        assert video.crop_height == 0
+
+
+class TestVideoFilters:
+    def _filters(self, media_file: Path, **kwargs) -> list[str]:
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(media_file, video_stream=VideoStream(**kwargs))
+        return list(encoder._video_filters().values())
+
+    def test_none_for_plain_1080p(self, media_file):
+        assert self._filters(media_file, width=1920, height=1080) == []
+
+    def test_crop_only(self, media_file):
+        assert self._filters(media_file, width=1920, height=1080, crop_height=800, crop_top=140) == [
+            "crop=iw:800:0:140"
+        ]
+
+    def test_scales_down_to_the_box(self, media_file):
+        assert self._filters(media_file, width=3840, height=2160) == [
+            "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"
+        ]
+
+    def test_never_upscales(self, media_file):
+        assert self._filters(media_file, width=1280, height=720) == []
+
+    def test_crop_comes_before_scale(self, media_file):
+        filters = self._filters(media_file, width=3840, height=2160, crop_height=1600, crop_top=280)
+        assert [f.split("=")[0] for f in filters] == ["crop", "scale"]
+
+    def test_tone_maps_hdr_last(self, media_file):
+        filters = self._filters(media_file, width=3840, height=2160, color_transfer="smpte2084")
+        assert filters[-1] == ffmpeg.get_filter_tonemap("smpte2084")
 
 
 class TestEncoderEncode:
@@ -472,7 +611,7 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[4] == encoder._processing_file.audio_tracks
+        assert mock_cmd.call_args.args[5] == encoder._processing_file.audio_tracks
 
     def test_unknown_source_video_bitrate_falls_back_to_target(self, media_file, special_dirs, location_config):
         location_config.target_video_bitrate = 2250
@@ -524,25 +663,35 @@ class TestEncoderOptimize:
 
     def test_returns_true_on_success(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
-        with patch("baycone.encoding.subprocess.run", return_value=MagicMock(returncode=0)):
+        with patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()):
             assert encoder._optimize(encoded=False) is True
 
     def test_returns_false_when_no_audio_tracks(self, media_file, special_dirs):
         encoder = self._encoder(media_file, audio_tracks=[])
-        assert encoder._optimize(encoded=False) is False
+        with patch("baycone.encoding.subprocess.Popen") as mock_popen:
+            assert encoder._optimize(encoded=False) is False
+        mock_popen.assert_not_called()
 
     def test_returns_false_on_ffmpeg_failure(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
-        with patch(
-            "baycone.encoding.subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "ffmpeg", stderr="error"),
-        ):
+        with patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock(returncode=1)):
             assert encoder._optimize(encoded=False) is False
+
+    def test_logs_ffmpeg_errors_on_failure(self, media_file, special_dirs, caplog):
+        encoder = self._encoder(media_file)
+
+        def fail(cmd, stderr, **kwargs):
+            stderr.write("moov atom not found\n")
+            return make_popen_mock(returncode=1)
+
+        with patch("baycone.encoding.subprocess.Popen", side_effect=fail):
+            encoder._optimize(encoded=False)
+        assert "moov atom not found" in caplog.text
 
     def test_reads_the_original_when_not_encoded(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
         with (
-            patch("baycone.encoding.subprocess.run"),
+            patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()),
             patch("baycone.encoding.ffmpeg.get_cmd_optimize", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._optimize(encoded=False)
@@ -551,12 +700,63 @@ class TestEncoderOptimize:
     def test_reads_the_encoded_file_when_encoded(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
         with (
-            patch("baycone.encoding.subprocess.run"),
+            patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()),
             patch("baycone.encoding.ffmpeg.get_cmd_optimize", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._optimize(encoded=True)
         assert mock_cmd.call_args.args[0] == encoder._processing_file.encoding_path
         assert mock_cmd.call_args.args[2:] == (encoder._processing_file.audio_tracks, True)
+
+
+class TestLogging:
+    def _encoder(self, media_file: Path, **kwargs) -> Encoder:
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(
+            media_file,
+            is_valid=True,
+            duration=kwargs.get("duration", 100),
+            video_stream=VideoStream(
+                codec="hevc",
+                bitrate=5000,
+                shall_encode=True,
+                width=3840,
+                height=2160,
+                color_transfer="smpte2084",
+                crop_height=1600,
+                crop_top=280,
+            ),
+            audio_streams=[AudioStream(index=0), AudioStream(index=1), AudioStream(index=2)],
+            audio_tracks=[
+                AudioTrack(AudioStream(codec="ac3", channels=6, lang="eng"), bitrate=384),
+                AudioTrack(AudioStream(codec="aac", channels=2, lang="ces")),
+            ],
+        )
+        return encoder
+
+    def test_plan_describes_video_and_audio(self, media_file, special_dirs, caplog, location_config):
+        location_config.target_video_bitrate = 2250
+        caplog.set_level("INFO")
+        self._encoder(media_file)._log_plan()
+        assert (
+            "Video: hevc 3840x2160 HDR 5000 kbps, encode to h264 2250 kbps"
+            " (crop to 3840x1600, scale to fit 1920x1080, tone map to SDR)"
+        ) in caplog.text
+        assert (
+            "Audio: eng Surround 5.1 (ac3 -> aac 384 kbps), ces Stereo (aac, copy); 1 track(s) dropped" in caplog.text
+        )
+
+    def test_progress_names_the_file_and_estimates_the_rest(self, media_file, special_dirs, caplog):
+        caplog.set_level("INFO")
+        encoder = self._encoder(media_file)
+        progress = make_popen_mock(lines=["out_time_us=25000000\n"])
+        with (
+            patch("baycone.encoding.subprocess.Popen", return_value=progress),
+            patch("baycone.encoding.time.monotonic", side_effect=[0, 0, 60, 60]),
+        ):
+            encoder._run_ffmpeg(["ffmpeg"], "Encoding 1st pass")
+        assert "'movie.mp4' Encoding 1st pass: 0 %" in caplog.text
+        assert "'movie.mp4' Encoding 1st pass: 20 %, ETA 0:03:00" in caplog.text  # 25 % done in 60 s
+        assert "Encoding 1st pass finished in 0:01:00" in caplog.text
 
 
 class TestArchiveOriginal:

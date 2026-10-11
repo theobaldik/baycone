@@ -9,7 +9,10 @@ plain MP4 that any player handles.
 ## Features
 
 - Watches multiple directories for new video files (configurable poll interval)
-- Transcodes to **h264 / AAC** MP4 using a two-pass `libx264` encode
+- Transcodes to **h264 / AAC** MP4 using a two-pass `libx264` encode, always 8-bit (`yuv420p`) for broad player
+  support
+- Scales larger videos down to fit 1920×1080 (configurable), crops black bars at the top and bottom, and tone maps
+  HDR10 / HLG to SDR — all only when the video is re-encoded anyway
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
 - Keeps the original audio language plus your preferred languages, one track per language at the preferred channel
   count, and drops the rest
@@ -28,7 +31,10 @@ plain MP4 that any player handles.
 - MP4 has no "original" track flag — the original language is marked by being the first (default) track. The flag is
   kept when `target_container` is Matroska.
 - The standalone CLI handles the first audio track only.
-- No subtitle handling.
+- Subtitles are always dropped from the output.
+- A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
+- Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colours. Profile 7 and 8
+  carry an HDR10 base layer and are tone mapped from that.
 
 ## Directory structure
 
@@ -68,6 +74,7 @@ defaults:
   allowed_video_codecs: [ h264 ]
   allowed_audio_codecs: [ aac ]
   limit_video_bitrate: 2800         # kbps — files below this are not re-encoded
+  limit_video_height: 1080          # larger videos are scaled down to fit 1920x1080
   limit_audio_channel_bitrate: 96   # kbps per channel
 
   # Used when a file does have to be re-encoded.
@@ -134,6 +141,16 @@ services:
 
 ```bash
 docker compose up -d
+docker compose logs -f baycone   # follow what the service is doing
+```
+
+Each file logs what will happen to it, then its progress in 10 % steps with an estimate of the remaining time:
+
+```
+Processing 'Show/Season 1/episode.mkv' (0:42:10)
+Video: hevc 5200 kbps, encode to h264 2250 kbps
+Audio: eng Surround 5.1 (ac3 -> aac 384 kbps), ces Stereo (aac, copy); 2 track(s) dropped
+'Show/Season 1/episode.mkv' Encoding 1st pass: 40 %, ETA 0:07:12
 ```
 
 Published tags use the plain version — `theobaldik/baycone:0.1.0`, `:0.1`, `:latest`.

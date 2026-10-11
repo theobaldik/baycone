@@ -100,7 +100,13 @@ class DefaultsConfig(Serializable):
     target_audio_channels: int = 2
 
     limit_video_bitrate: int = 2800
+    limit_video_height: int = 1080
     limit_audio_channel_bitrate: int = 96
+
+    @property
+    def limit_video_width(self) -> int:
+        """The width of a 16:9 box, so a wide film is not scaled past it by its height alone."""
+        return self.limit_video_height * 16 // 9 // 2 * 2
 
 
 @dataclass

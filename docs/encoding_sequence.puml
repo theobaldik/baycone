@@ -39,7 +39,11 @@ analyzer --> encoder : file_info
 deactivate analyzer
 
 alt video or selected audio shall encode
+    opt video shall encode
+        encoder -> analyzer : detect_crop()\nkeyframes only, top / bottom bars
+    end
     encoder -> encoder : cap video bitrate at target,\ntarget when source is unknown
+    encoder -> encoder : video filters:\ncrop, scale to fit, tone map HDR
 
     alt video shall encode
         encoder -> cmd : get_cmd_encode_movie_pass_1(...)

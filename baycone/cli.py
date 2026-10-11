@@ -93,14 +93,14 @@ def run_process(command: list[str], duration: float, progress_template: str) -> 
 
 def transcode_1_pass(input_file: Path, video_bitrate: int, duration: float) -> None:
     passlog_file = get_file_passlog(input_file)
-    cmd = ffmpeg.get_cmd_encode_movie_pass_1(input_file, passlog_file, video_bitrate)
+    cmd = ffmpeg.get_cmd_encode_movie_pass_1(input_file, passlog_file, video_bitrate, [])
     run_process(cmd, duration, "Transcoding 1st pass: {percent:.2f} %")
 
 
 def transcode_2_pass(input_file: Path, video_bitrate: int, audio_track: AudioTrack, duration: float) -> None:
     passlog_file = get_file_passlog(input_file)
     output_file = get_file_transcoded(input_file)
-    cmd = ffmpeg.get_cmd_encode_movie_pass_2(input_file, output_file, passlog_file, video_bitrate, [audio_track])
+    cmd = ffmpeg.get_cmd_encode_movie_pass_2(input_file, output_file, passlog_file, video_bitrate, [], [audio_track])
     run_process(cmd, duration, "Transcoding 2nd pass: {percent:.2f} %")
 
 

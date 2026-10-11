@@ -2,7 +2,11 @@ from copy import deepcopy
 import logging
 import subprocess
 import json
+import re
 import shutil
+import tempfile
+import time
+from datetime import timedelta
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -19,6 +23,18 @@ from baycone.config import config, LocationConfig, SpecialDirs
 
 log = logging.getLogger(__name__)
 
+HDR_TRANSFERS: tuple[str, ...] = ("smpte2084", "arib-std-b67")
+
+CROP_PATTERN = re.compile(r"crop=\d+:(\d+):\d+:(\d+)")
+
+
+def _format_duration(seconds: float) -> str:
+    return str(timedelta(seconds=int(seconds)))
+
+
+def _format_bitrate(kbps: int) -> str:
+    return f"{kbps} kbps" if kbps > 0 else "unknown bitrate"
+
 
 def _parse_number(value: object) -> float:
     """ffprobe reports unknown values as missing or 'N/A'."""
@@ -33,6 +49,16 @@ class VideoStream:
     shall_encode: bool = False
     codec: str = ""
     bitrate: int = 0
+    width: int = 0
+    height: int = 0
+    pix_fmt: str = ""
+    color_transfer: str = ""
+    crop_height: int = 0  # 0 keeps the full height
+    crop_top: int = 0
+
+    @property
+    def is_hdr(self) -> bool:
+        return self.color_transfer in HDR_TRANSFERS
 
 
 class FileInfo:
@@ -153,6 +179,10 @@ class Analyzer:
             video = video_streams[0]
             file_info.video_stream.codec = video.get("codec_name", "")
             file_info.video_stream.bitrate = Analyzer._get_bitrate(video)
+            file_info.video_stream.width = int(_parse_number(video.get("width")))
+            file_info.video_stream.height = int(_parse_number(video.get("height")))
+            file_info.video_stream.pix_fmt = video.get("pix_fmt", "")
+            file_info.video_stream.color_transfer = video.get("color_transfer", "")
 
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
         for index, stream in enumerate(audio_streams):
@@ -175,6 +205,24 @@ class Analyzer:
         return file_info
 
     @staticmethod
+    def detect_crop(file_path: Path, video: VideoStream) -> None:
+        """Top and bottom bars only, the full width is always kept."""
+        log.info("Detecting black bars...")
+        try:
+            result = subprocess.run(ffmpeg.get_cmd_cropdetect(file_path), capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            log.warning(f"Black bar detection failed, keeping the full frame: {e.stderr.strip()[-500:]}")
+            return
+
+        matches = CROP_PATTERN.findall(result.stderr)
+        height, top = map(int, matches[-1]) if matches else (0, 0)
+        if 0 < height < video.height:
+            video.crop_height, video.crop_top = height, top
+            log.info(f"Black bars detected, cropping to {video.width}x{height}")
+        else:
+            log.info("No black bars detected")
+
+    @staticmethod
     def analyze(file_path: Path) -> FileInfo:
         file_info = Analyzer._get_file_info(file_path)
         location_config = file_info.location_config
@@ -182,15 +230,21 @@ class Analyzer:
         if not any(c in location_config.allowed_containers for c in file_info.containers):
             file_info.shall_remux = True
 
-        if file_info.video_stream.codec not in location_config.allowed_video_codecs:
-            file_info.video_stream.shall_encode = True
-        if file_info.video_stream.bitrate > location_config.limit_video_bitrate:
-            file_info.video_stream.shall_encode = True
+        # An unknown bitrate cannot be checked against the limit, the encode then targets the configured one
+        video = file_info.video_stream
+        if (
+            video.codec not in location_config.allowed_video_codecs
+            or not 0 < video.bitrate <= location_config.limit_video_bitrate
+            or video.pix_fmt != ffmpeg.TARGET_PIX_FMT
+            or video.width > location_config.limit_video_width
+            or video.height > location_config.limit_video_height
+        ):
+            video.shall_encode = True
 
         for stream in file_info.audio_streams:
             if stream.codec not in location_config.allowed_audio_codecs:
                 stream.shall_encode = True
-            if stream.channels > 0 and stream.channel_bitrate > location_config.limit_audio_channel_bitrate:
+            if not 0 < stream.channel_bitrate <= location_config.limit_audio_channel_bitrate:
                 stream.shall_encode = True
 
         file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, location_config)
@@ -207,6 +261,16 @@ class Encoder:
         self._processing_file = Analyzer.analyze(file_path)
 
         try:
+            if self._processing_file.is_valid:
+                log.info(
+                    f"Processing '{self._processing_file.relative_path}'"
+                    f" ({_format_duration(self._processing_file.duration)})"
+                )
+                # Decodes keyframes of the whole file, only worth it when the video is encoded anyway
+                if self._processing_file.video_stream.shall_encode:
+                    Analyzer.detect_crop(file_path, self._processing_file.video_stream)
+                self._log_plan()
+
             # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
             shall_encode = self._processing_file.video_stream.shall_encode or any(
                 t.stream.shall_encode for t in self._processing_file.audio_tracks
@@ -229,11 +293,60 @@ class Encoder:
             self._cleanup_workdirs()
             self._processing_file = None
 
-    def _log_progress(self, process: subprocess.Popen, template: str = "{percent} %") -> None:
+    def _target_video_bitrate(self) -> int:
+        return cap_bitrate(
+            self._processing_file.video_stream.bitrate, self._processing_file.location_config.target_video_bitrate
+        )
+
+    def _video_filters(self) -> dict[str, str]:
+        """Description -> ffmpeg filter, in the order they apply."""
+        video = self._processing_file.video_stream
+        location_config = self._processing_file.location_config
+        filters = {}
+
+        height = video.height
+        if video.crop_height:
+            height = video.crop_height
+            filters[f"crop to {video.width}x{height}"] = ffmpeg.get_filter_crop(height, video.crop_top)
+
+        # Never upscales; scaling before tone mapping leaves fewer pixels for the expensive float conversion
+        box_width, box_height = location_config.limit_video_width, location_config.limit_video_height
+        if video.width > box_width or height > box_height:
+            filters[f"scale to fit {box_width}x{box_height}"] = ffmpeg.get_filter_scale(box_width, box_height)
+
+        if video.is_hdr:
+            filters["tone map to SDR"] = ffmpeg.get_filter_tonemap(video.color_transfer)
+
+        return filters
+
+    def _log_plan(self) -> None:
+        file_info = self._processing_file
+        video = file_info.video_stream
+        source = f"{video.codec} {video.width}x{video.height}{' HDR' if video.is_hdr else ''}"
+        action = "copy"
+        if video.shall_encode:
+            action = f"encode to h264 {_format_bitrate(self._target_video_bitrate())}"
+            if filters := self._video_filters():
+                action += f" ({', '.join(filters)})"
+        log.info(f"Video: {source} {_format_bitrate(video.bitrate)}, {action}")
+
+        tracks = []
+        for track in file_info.audio_tracks:
+            stream = track.stream
+            action = (
+                f"{stream.codec} -> aac {_format_bitrate(track.bitrate)}" if track.bitrate else f"{stream.codec}, copy"
+            )
+            tracks.append(f"{stream.lang} {track.title or f'{stream.channels} ch'} ({action})")
+        dropped = len(file_info.audio_streams) - len(file_info.audio_tracks)
+        log.info(f"Audio: {', '.join(tracks) or 'none'}; {dropped} track(s) dropped")
+
+    def _log_progress(self, process: subprocess.Popen, step: str) -> None:
+        name = self._processing_file.relative_path
         duration = self._processing_file.duration
+        started = time.monotonic()
         percent = 0
 
-        log.info(template.format(percent=percent))
+        log.info(f"'{name}' {step}: 0 %")
 
         # Drain the pipe even without a duration, otherwise FFmpeg blocks on a full pipe
         for line in process.stdout:
@@ -243,19 +356,25 @@ class Encoder:
                 out_percent = int(value) / 10_000 / duration
                 if out_percent >= percent + 10:
                     percent = int(out_percent // 10) * 10
-                    log.info(template.format(percent=percent))
+                    eta = (time.monotonic() - started) * max(100 - out_percent, 0) / out_percent
+                    log.info(f"'{name}' {step}: {percent} %, ETA {_format_duration(eta)}")
 
-    def _run_ffmpeg(self, cmd: list[str], progress_template: str) -> None:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        try:
-            self._log_progress(process, progress_template)
-            process.wait()
-        except BaseException:
-            process.kill()
-            process.wait()
-            raise
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
+    def _run_ffmpeg(self, cmd: list[str], step: str) -> None:
+        started = time.monotonic()
+        # A file rather than a pipe, which would block FFmpeg once full while only stdout is drained
+        with tempfile.TemporaryFile(mode="w+") as stderr:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr, text=True)
+            try:
+                self._log_progress(process, step)
+                process.wait()
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            if process.returncode != 0:
+                stderr.seek(0)
+                raise subprocess.CalledProcessError(process.returncode, cmd, stderr=stderr.read().strip())
+        log.info(f"{step} finished in {_format_duration(time.monotonic() - started)}")
 
     def _encode(self) -> bool:
         file_info = self._processing_file
@@ -268,7 +387,8 @@ class Encoder:
             log.error(f"Encoding skipped: No audio streams found in '{file_info.file_path}'")
             return False
 
-        video_bitrate = cap_bitrate(file_info.video_stream.bitrate, file_info.location_config.target_video_bitrate)
+        video_bitrate = self._target_video_bitrate()
+        video_filters = list(self._video_filters().values())
 
         file_info.encoding_path.parent.mkdir(parents=True, exist_ok=True)
         file_info.encoding_path.unlink(missing_ok=True)
@@ -276,29 +396,29 @@ class Encoder:
         try:
             if file_info.video_stream.shall_encode:
                 file_info.passlog_path.parent.mkdir(parents=True, exist_ok=True)
-                log.info("Encoding file...")
-                cmd = ffmpeg.get_cmd_encode_movie_pass_1(file_info.file_path, file_info.passlog_path, video_bitrate)
-                self._run_ffmpeg(cmd, "Encoding 1st pass: {percent} %")
-                log.info("1st pass encoding finished")
+                cmd = ffmpeg.get_cmd_encode_movie_pass_1(
+                    file_info.file_path, file_info.passlog_path, video_bitrate, video_filters
+                )
+                self._run_ffmpeg(cmd, "Encoding 1st pass")
 
                 cmd = ffmpeg.get_cmd_encode_movie_pass_2(
                     file_info.file_path,
                     file_info.encoding_path,
                     file_info.passlog_path,
                     video_bitrate,
+                    video_filters,
                     file_info.audio_tracks,
                 )
-                self._run_ffmpeg(cmd, "Encoding 2nd pass: {percent} %")
+                self._run_ffmpeg(cmd, "Encoding 2nd pass")
             else:
-                log.info("Encoding audio, copying video...")
                 cmd = ffmpeg.get_cmd_encode_audio(file_info.file_path, file_info.encoding_path, file_info.audio_tracks)
-                self._run_ffmpeg(cmd, "Encoding audio: {percent} %")
+                self._run_ffmpeg(cmd, "Encoding audio")
 
             log.info(f"Encoded file saved to '{file_info.encoding_path}'")
             return True
 
         except subprocess.CalledProcessError as e:
-            log.error(f"FFmpeg encoding failed for '{file_info.file_path}' with exit code {e.returncode}")
+            log.error(f"FFmpeg encoding failed for '{file_info.file_path}' with exit code {e.returncode}: {e.stderr}")
 
         return False
 
@@ -316,12 +436,14 @@ class Encoder:
         )
 
         try:
-            log.info("Optimizing file...")
-            subprocess.run(cmd, check=True, text=True, capture_output=True)
+            self._run_ffmpeg(cmd, "Optimizing")
             log.info(f"Optimized file saved to '{self._processing_file.processed_path}'")
             return True
         except subprocess.CalledProcessError as e:
-            log.error(f"FFmpeg optimization failed for {self._processing_file.file_path}: {e.stderr}")
+            log.error(
+                f"FFmpeg optimization failed for '{self._processing_file.file_path}'"
+                f" with exit code {e.returncode}: {e.stderr}"
+            )
         except Exception as e:
             log.error(f"Unexpected error during FFmpeg optimization for {self._processing_file.file_path}: {e}")
 

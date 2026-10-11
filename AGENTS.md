@@ -19,7 +19,7 @@
 
 ## Test status
 
-`uv run pytest` is green (198 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (231 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -46,8 +46,8 @@ Two tests guard against past data-loss/logic bugs — keep them:
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
-  `config.ffprobe_path`. The variable-length audio section is spliced in at the `AUDIO_ARGS` element by `_render()`,
-  built per track from the `ARGS_AUDIO_*` templates.
+  `config.ffprobe_path`. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` elements by
+  `_render()`, built from the `ARGS_*` and `FILTER_*` templates. Both encode passes must get the same video filters.
 - `baycone/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into them (they
   grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
   scan — never sleep per file. Failed files are skipped until they change (`mark_failed`).
@@ -57,7 +57,8 @@ Two tests guard against past data-loss/logic bugs — keep them:
 **`Encoder.process()` invariant:** the original file is moved to `_baycone_originals/` only after both encoding and
 optimizing succeeded. On any failure it stays put, `process()` returns `False` and the watcher skips it until the file
 changes — a failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it
-is within limits, and a container mismatch alone is fixed by the optimize remux.
+is within limits, and a container mismatch alone is fixed by the optimize remux. Black-bar detection
+(`Analyzer.detect_crop`) decodes keyframes of the whole file, so it only runs when the video is re-encoded anyway.
 `_cleanup_workdirs()` always runs (`finally`).
 
 **Directory pruning** (`_remove_empty_dirs`) walks up with `rmdir()`, which only ever succeeds on empty directories.

@@ -36,6 +36,7 @@ class DirWatcher {
 
 class Analyzer <<static>> {
     + {static} analyze(file_path : Path) : FileInfo
+    + {static} detect_crop(file_path : Path, video : VideoStream)
     - {static} _get_file_info(file_path : Path) : FileInfo
     - {static} _get_bitrate(stream : dict) : int
     - {static} _get_ffprobe_result(file_path : Path) : dict | None
@@ -48,8 +49,11 @@ class Encoder {
     - _optimize(encoded : bool) : bool
     - _archive_original()
     - _cleanup_workdirs()
-    - _run_ffmpeg(cmd : list<str>, progress_template : str)
-    - _log_progress(process : Popen, template : str)
+    - _run_ffmpeg(cmd : list<str>, step : str)
+    - _log_progress(process : Popen, step : str)
+    - _log_plan()
+    - _video_filters() : dict<str, str>
+    - _target_video_bitrate() : int
     - {static} _remove_empty_dirs(directory : Path, root_dir : Path)
     - {static} _clear_dir(directory : Path)
 }
@@ -73,6 +77,13 @@ class VideoStream <<dataclass>> {
     + shall_encode : bool
     + codec : str
     + bitrate : int
+    + width : int
+    + height : int
+    + pix_fmt : str
+    + color_transfer : str
+    + crop_height : int
+    + crop_top : int
+    + is_hdr : bool
 }
 
 class AudioStream <<dataclass>> {
@@ -138,6 +149,8 @@ class DefaultsConfig <<dataclass>> {
     + target_audio_languages : list<str>
     + target_audio_channels : int
     + limit_video_bitrate : int
+    + limit_video_height : int
+    + limit_video_width : int
     + limit_audio_channel_bitrate : int
 }
 
