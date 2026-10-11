@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0] - 2026-10-11
+
+### Changed
+
+- **Breaking:** Mount the config directory in Docker (`./config:/config:ro`); move `config.yml` into a `config/` directory
+- Compare and cap source bitrates as their h264 or aac equivalent, so HEVC, AV1, VP9 and Opus sources keep their quality
+
+### Added
+
+- Reload `config.yml` automatically when it changes, keeping the previous configuration when the new one is invalid
+
 ## [0.3.0] - 2026-10-11
 
 ### Changed
@@ -54,6 +65,7 @@ _Initial release._
 - Add PlantUML architecture and behaviour diagrams in `docs/`
 - Add MIT license
 
+[0.4.0]: https://github.com/theobaldik/baycone/releases/tag/v0.4.0
 [0.3.0]: https://github.com/theobaldik/baycone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/theobaldik/baycone/releases/tag/v0.2.0
 [0.1.0]: https://github.com/theobaldik/baycone/releases/tag/v0.1.0
