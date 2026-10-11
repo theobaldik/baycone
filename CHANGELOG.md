@@ -9,7 +9,7 @@
 
 ### Added
 
-- Add multitrack audio: the original language plus `target_audio_languages`, one track per language
+- Add multitrack audio: tracks kept and ordered by `target_audio_languages`, `original` for the original language
 - Add support for 4K, 10-bit and HDR sources, with black bar cropping
 - Add progress and ETA to the log
 

@@ -96,7 +96,7 @@ class DefaultsConfig(Serializable):
 
     target_audio_codec: str = "aac"
     target_audio_channel_bitrate: int = 64
-    target_audio_languages: list[str] = field(default_factory=lambda: ["eng", "cze"])
+    target_audio_languages: list[str] = field(default_factory=lambda: ["original", "eng", "cze"])
     target_audio_channels: int = 2
 
     limit_video_bitrate: int = 2800

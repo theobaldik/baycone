@@ -31,8 +31,9 @@ endif
 note right
     ""ffprobe"" - container, codecs,
     bitrates, channels, duration.
-    Select audio tracks: original language
-    first, then the preferred ones.
+    Select audio tracks: configured
+    languages in order, ""original""
+    for the original one.
 end note
 
 if (video or selected audio outside limits) then (yes)

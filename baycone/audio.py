@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from baycone.config import LocationConfig
 
 UNDEFINED_LANGUAGE = "und"
+# Stands for the original track's language in `target_audio_languages`
+ORIGINAL_LANGUAGE = "original"
 
 TRACK_NAMES: dict[int, str] = {
     1: "Mono",
@@ -104,17 +106,21 @@ def _pick_by_channels(versions: list[AudioStream], preferred: int) -> AudioStrea
 
 
 def select_audio_tracks(streams: list[AudioStream], location_config: LocationConfig) -> list[AudioTrack]:
-    """The original language first, then the preferred ones in order; one track per language, nothing else."""
+    """The configured languages in order, one track per language; the original alone when none of them is found."""
     candidates = [s for s in streams if not s.special]
 
     if candidates:
         original = next((s for s in candidates if s.original), candidates[0])
-        preferred = [normalize_language(lang) for lang in location_config.target_audio_languages]
+        languages = [
+            original.lang if lang.strip().lower() == ORIGINAL_LANGUAGE else normalize_language(lang)
+            for lang in location_config.target_audio_languages
+        ]
         selected = []
-        for language in dict.fromkeys([original.lang, *preferred]):
+        for language in dict.fromkeys(languages):
             versions = [s for s in candidates if s.lang == language]
             if versions:
                 selected.append(_pick_by_channels(versions, location_config.target_audio_channels))
+        selected = selected or [original]
     else:
         selected = streams[:1]
 

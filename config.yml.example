@@ -35,10 +35,11 @@ defaults:
   target_audio_codec: aac
   target_audio_channel_bitrate: 64  # kbps per channel, multiplied by the channel count
 
-  # Audio tracks kept: the original language first (the track flagged 'original', else the first one), then these
-  # languages in this order. One track per language, every other track is dropped - including commentary and
-  # audio description tracks. ISO 639-2 codes, 'cze' and 'ces' are interchangeable.
-  target_audio_languages: [ eng, cze ]
+  # Audio tracks kept, in this order. 'original' is the original language (the track flagged 'original', else the
+  # first one) - list it later to move it back, e.g. [ pol, original ], or leave it out to drop it. The original is
+  # still kept when none of the languages is found. One track per language, every other track is dropped - including
+  # commentary and audio description tracks. ISO 639-2 codes, 'cze' and 'ces' are interchangeable.
+  target_audio_languages: [ original, eng, cze ]
   # Preferred channel count when a language has several tracks. Without an exact match, the fewest channels above it
   # win, else the most channels below it.
   target_audio_channels: 2

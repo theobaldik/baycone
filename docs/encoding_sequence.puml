@@ -34,7 +34,7 @@ file_info --> analyzer : file_info
 deactivate file_info
 
 analyzer -> analyzer : flag shall_encode per video / audio stream,\nshall_remux for the container
-analyzer -> analyzer : select_audio_tracks()\noriginal language first, then preferred ones
+analyzer -> analyzer : select_audio_tracks()\nconfigured languages in order,\noriginal for the original one
 analyzer --> encoder : file_info
 deactivate analyzer
 

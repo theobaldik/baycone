@@ -84,7 +84,7 @@ defaults:
   target_video_bitrate: 2250        # kbps — never upscales above the source bitrate
   target_audio_codec: aac
   target_audio_channel_bitrate: 64  # kbps per channel
-  target_audio_languages: [ eng, cze ]  # kept after the original language, in this order
+  target_audio_languages: [ original, eng, cze ]  # kept in this order
   target_audio_channels: 2          # preferred channel count per language
 
 locations:
@@ -98,10 +98,11 @@ Each location inherits from `defaults` and can override any field individually. 
 
 ### Audio tracks
 
-Every other audio track is dropped, so the output holds:
-
-1. The **original language** — the track flagged `original`, otherwise the first audio track
-2. One track for each language in `target_audio_languages` that the file has, in that order
+The output holds one track for each language in `target_audio_languages` that the file has, in that order, and every
+other audio track is dropped. `original` in the list stands for the **original language** — the track flagged
+`original`, otherwise the first audio track. Its position decides where the original goes (`[ pol, original ]` puts
+Polish first), and leaving it out drops the original. When none of the listed languages is found, the original is kept
+anyway, so a file never loses its audio.
 
 When a language has several tracks, the one with `target_audio_channels` channels wins; without an exact match, the
 fewest channels above it, otherwise the most channels below it. Tracks flagged as commentary, audio description,

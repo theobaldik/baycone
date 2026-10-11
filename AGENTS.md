@@ -44,7 +44,8 @@ Two tests guard against past data-loss/logic bugs — keep them:
 - `baycone/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()` mutates this
   in-place. Other modules import `from baycone.config import config` and read from it at runtime.
 - `baycone/audio.py` — `AudioStream` (probed), `AudioTrack` (output) and `select_audio_tracks()`, a pure function
-  picking the original language first, then `target_audio_languages`, one track per language by `target_audio_channels`
+  picking `target_audio_languages` in order (`original` stands for the original track's language, which is kept when
+  nothing matches), one track per language by `target_audio_channels`
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /

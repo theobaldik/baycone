@@ -10,7 +10,7 @@ def stream(index: int, lang: str, channels: int = 2, **kwargs) -> AudioStream:
 
 def select(streams: list[AudioStream], languages: list[str] | None = None, channels: int = 2) -> list[AudioStream]:
     location_config = LocationConfig(
-        target_audio_languages=["eng", "cze"] if languages is None else languages,
+        target_audio_languages=["original", "eng", "cze"] if languages is None else languages,
         target_audio_channels=channels,
     )
     return [track.stream for track in select_audio_tracks(streams, location_config)]
@@ -73,15 +73,15 @@ class TestAudioTrack:
 class TestLanguageSelection:
     def test_original_comes_first_regardless_of_preference(self):
         eng, ces = stream(0, "eng"), stream(1, "ces")
-        assert select([eng, ces], languages=["cze", "eng"]) == [eng, ces]
+        assert select([eng, ces], languages=["original", "cze", "eng"]) == [eng, ces]
 
     def test_preferred_languages_follow_in_config_order(self):
         jpn, eng, ces = stream(0, "jpn"), stream(1, "eng"), stream(2, "ces")
-        assert select([jpn, eng, ces], languages=["cze", "eng"]) == [jpn, ces, eng]
+        assert select([jpn, eng, ces], languages=["original", "cze", "eng"]) == [jpn, ces, eng]
 
     def test_original_flag_beats_position(self):
         ces, eng = stream(0, "ces"), stream(1, "eng", original=True)
-        assert select([ces, eng], languages=["cze"]) == [eng, ces]
+        assert select([ces, eng], languages=["original", "cze"]) == [eng, ces]
 
     def test_other_languages_are_dropped(self):
         eng, ger, ces = stream(0, "eng"), stream(1, "deu"), stream(2, "ces")
@@ -89,15 +89,35 @@ class TestLanguageSelection:
 
     def test_missing_preferred_languages_are_skipped(self):
         eng = stream(0, "eng")
-        assert select([eng], languages=["cze", "fre"]) == [eng]
+        assert select([eng], languages=["original", "cze", "fre"]) == [eng]
 
     def test_bibliographic_codes_in_config_match(self):
         eng, ces = stream(0, "eng"), stream(1, "ces")
-        assert select([eng, ces], languages=["cze"]) == [eng, ces]
+        assert select([eng, ces], languages=["original", "cze"]) == [eng, ces]
 
     def test_no_preferred_languages_keeps_only_the_original(self):
         eng, ces = stream(0, "eng"), stream(1, "ces")
         assert select([eng, ces], languages=[]) == [eng]
+
+    def test_original_position_follows_the_config(self):
+        ces, pol = stream(0, "ces"), stream(1, "pol")
+        assert select([ces, pol], languages=["pol", "original"]) == [pol, ces]
+
+    def test_original_is_dropped_when_not_listed(self):
+        ces, pol = stream(0, "ces"), stream(1, "pol")
+        assert select([ces, pol], languages=["pol"]) == [pol]
+
+    def test_original_listed_twice_is_kept_once(self):
+        ces, pol = stream(0, "ces"), stream(1, "pol")
+        assert select([ces, pol], languages=["cze", "original"]) == [ces]
+
+    def test_original_token_is_case_insensitive(self):
+        ces, pol = stream(0, "ces"), stream(1, "pol")
+        assert select([ces, pol], languages=["pol", "Original"]) == [pol, ces]
+
+    def test_falls_back_to_the_original_when_nothing_matches(self):
+        eng, ger = stream(0, "eng"), stream(1, "deu")
+        assert select([eng, ger], languages=["pol"]) == [eng]
 
     def test_undefined_original_language_is_kept(self):
         und, eng = stream(0, "und"), stream(1, "eng")
