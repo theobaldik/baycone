@@ -20,6 +20,7 @@ from baycone.audio import (
     select_audio_tracks,
 )
 from baycone.config import config, LocationConfig, SpecialDirs
+from baycone.subtitles import SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ class FileInfo:
         self.video_stream: VideoStream = kwargs.get("video_stream", VideoStream())
         self.audio_streams: list[AudioStream] = kwargs.get("audio_streams", [])
         self.audio_tracks: list[AudioTrack] = kwargs.get("audio_tracks", [])
+        self.subtitle_streams: list[SubtitleStream] = kwargs.get("subtitle_streams", [])
+        self.subtitle_tracks: list[SubtitleStream] = kwargs.get("subtitle_tracks", [])
 
         self.file_path = file_path
 
@@ -128,6 +131,9 @@ class FileInfo:
     @property
     def processed_path(self) -> Path:
         return self._special_dirs.processed_dir / self.relative_path.with_suffix(self._location_config.target_extension)
+
+    def subtitle_path(self, lang: str) -> Path:
+        return self.processed_path.with_suffix(f".{language_suffix(lang)}.srt")
 
 
 class Analyzer:
@@ -205,6 +211,19 @@ class Analyzer:
 
             file_info.audio_streams.append(audio_stream)
 
+        subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+        for index, stream in enumerate(subtitle_streams):
+            tags = stream.get("tags", {})
+            disposition = stream.get("disposition", {})
+            file_info.subtitle_streams.append(
+                SubtitleStream(
+                    index=index,
+                    codec=stream.get("codec_name", ""),
+                    lang=normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", "")),
+                    special=any(disposition.get(name) for name in SPECIAL_DISPOSITIONS),
+                )
+            )
+
         return file_info
 
     @staticmethod
@@ -251,6 +270,7 @@ class Analyzer:
                 stream.shall_encode = True
 
         file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, location_config)
+        file_info.subtitle_tracks = select_subtitle_streams(file_info.subtitle_streams, location_config)
 
         return file_info
 
@@ -292,6 +312,8 @@ class Encoder:
             if not self._optimize(shall_encode):
                 log.error(f"Processing aborted: Optimizing failed for '{file_path}'")
                 return False
+
+            self._extract_subtitles()
 
             self._archive_original()
             return True
@@ -345,6 +367,10 @@ class Encoder:
             tracks.append(f"{stream.lang} {track.title or f'{stream.channels} ch'} ({action})")
         dropped = len(file_info.audio_streams) - len(file_info.audio_tracks)
         log.info(f"Audio: {', '.join(tracks) or 'none'}; {dropped} track(s) dropped")
+
+        if file_info.location_config.target_subtitle_languages:
+            languages = [s.lang for s in file_info.subtitle_tracks]
+            log.info(f"Subtitles: {', '.join(languages) or 'none'} extracted")
 
     def _log_progress(self, process: subprocess.Popen, step: str) -> None:
         name = self._processing_file.relative_path
@@ -446,6 +472,20 @@ class Encoder:
             log.error(f"Unexpected error during FFmpeg optimization for {self._processing_file.file_path}: {e}")
 
         return False
+
+    def _extract_subtitles(self) -> None:
+        """Never fails the file: the video is already done and a retry would encode it all over again."""
+        file_info = self._processing_file
+
+        for stream in file_info.subtitle_tracks:
+            path = file_info.subtitle_path(stream.lang)
+            try:
+                self._run_ffmpeg(ffmpeg.get_cmd_extract_subtitle(file_info.file_path, path, stream.index), "Subtitles")
+                ensure_utf8(path)
+                log.info(f"Subtitles saved to '{path}'")
+            except Exception as e:
+                log.warning(f"Extracting {stream.lang} subtitles of '{file_info.file_path}' failed: {e}")
+                path.unlink(missing_ok=True)
 
     # TODO: Move to another module
     @staticmethod

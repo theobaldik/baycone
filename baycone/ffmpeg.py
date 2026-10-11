@@ -223,6 +223,21 @@ CMD_FFMPEG_CROPDETECT = [
     "-",
 ]
 
+CMD_FFMPEG_EXTRACT_SUBTITLE = [
+    "{ffmpeg}",
+    "-y",
+    "-hide_banner",
+    "-v",
+    "error",
+    "-i",
+    "{input_file}",
+    "-map",
+    "0:s:{source}",
+    "-c:s",
+    "srt",
+    "{output_file}",
+]
+
 CMD_FFPROBE = [
     "{ffprobe}",
     "-v",
@@ -341,6 +356,15 @@ def get_cmd_optimize(input_file: Path, output_file: Path, audio_tracks: list[Aud
 
 def get_cmd_cropdetect(input_file: Path) -> list[str]:
     return _render(CMD_FFMPEG_CROPDETECT, input_file=input_file.absolute())
+
+
+def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int) -> list[str]:
+    return _render(
+        CMD_FFMPEG_EXTRACT_SUBTITLE,
+        input_file=input_file.absolute(),
+        output_file=output_file.absolute(),
+        source=source,
+    )
 
 
 def get_cmd_ffprobe(input_file: Path) -> list[str]:

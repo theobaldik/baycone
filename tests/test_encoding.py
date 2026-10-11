@@ -25,6 +25,7 @@ def make_ffprobe_output(
     audio_channels: int = 2,
     audio_lang: str = "eng",
     audio_disposition: dict[str, int] | None = None,
+    subtitles: list[dict] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -47,6 +48,7 @@ def make_ffprobe_output(
                     "tags": {"language": audio_lang},
                     "disposition": audio_disposition or {},
                 },
+                *[{"codec_type": "subtitle", **subtitle} for subtitle in subtitles or []],
             ],
         }
     )
@@ -461,6 +463,70 @@ class TestEncoderProcess:
         encoder = Encoder()
         self._process(encoder, self._file_info(media_file), media_file)
         assert encoder._processing_file is None
+
+
+class TestSubtitles:
+    SUBTITLES = [
+        {"codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng"}},
+        {"codec_name": "subrip", "tags": {"language": "cze"}},
+        {"codec_name": "ass", "tags": {"LANGUAGE": "eng"}, "disposition": {"comment": 1}},
+        {"codec_name": "subrip", "tags": {"language": "eng"}},
+    ]
+
+    def test_analyzer_selects_configured_text_streams(self, media_file, location_config):
+        location_config.target_subtitle_languages = ["eng", "cze"]
+        info = analyze(media_file, make_ffprobe_output(subtitles=self.SUBTITLES))
+        assert [s.index for s in info.subtitle_streams] == [0, 1, 2, 3]
+        assert [(s.index, s.lang) for s in info.subtitle_tracks] == [(3, "eng"), (1, "ces")]
+
+    def test_analyzer_selects_nothing_by_default(self, media_file, location_config):
+        info = analyze(media_file, make_ffprobe_output(subtitles=self.SUBTITLES))
+        assert info.subtitle_tracks == []
+
+    def test_path_uses_a_two_letter_language(self, media_file, location_config):
+        info = FileInfo(media_file)
+        assert info.subtitle_path("ces") == info.processed_path.with_suffix(".cs.srt")
+
+    def _extract(self, media_file, location_config, run_ffmpeg: MagicMock) -> Encoder:
+        location_config.target_subtitle_languages = ["eng", "cze"]
+        info = analyze(media_file, make_ffprobe_output(subtitles=self.SUBTITLES))
+        encoder = Encoder()
+        encoder._processing_file = info
+        info.processed_path.parent.mkdir(parents=True, exist_ok=True)
+        with patch.object(encoder, "_run_ffmpeg", run_ffmpeg):
+            encoder._extract_subtitles()
+        return encoder
+
+    def test_extracts_each_track_next_to_the_processed_file(self, media_file, location_config):
+        run_ffmpeg = MagicMock(side_effect=lambda cmd, step: Path(cmd[-1]).write_text("text"))
+        encoder = self._extract(media_file, location_config, run_ffmpeg)
+        info = encoder._processing_file
+        cmds = [call.args[0] for call in run_ffmpeg.call_args_list]
+        assert [cmd[cmd.index("-map") + 1] for cmd in cmds] == ["0:s:3", "0:s:1"]
+        assert [Path(cmd[-1]) for cmd in cmds] == [info.subtitle_path("eng"), info.subtitle_path("ces")]
+        assert info.subtitle_path("ces").name == "movie.cs.srt"
+
+    def test_failure_is_not_fatal_and_leaves_no_partial_file(self, media_file, location_config, caplog):
+        def fail(cmd, step):
+            Path(cmd[-1]).write_text("partial")
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        encoder = self._extract(media_file, location_config, MagicMock(side_effect=fail))
+        assert not encoder._processing_file.subtitle_path("eng").exists()
+        assert "failed" in caplog.text
+
+    def test_process_extracts_before_archiving(self, media_file, special_dirs):
+        encoder = Encoder()
+        calls = []
+        with (
+            patch.object(Analyzer, "analyze", return_value=FileInfo(media_file, is_valid=True, duration=1)),
+            patch.object(encoder, "_optimize", return_value=True),
+            patch.object(encoder, "_extract_subtitles", side_effect=lambda: calls.append("extract")),
+            patch.object(encoder, "_archive_original", side_effect=lambda: calls.append("archive")),
+            patch.object(encoder, "_cleanup_workdirs"),
+        ):
+            assert encoder.process(media_file)
+        assert calls == ["extract", "archive"]
 
 
 class TestVideoEncodeDecision:

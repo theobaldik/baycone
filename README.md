@@ -16,6 +16,7 @@ plain MP4 that any player handles.
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
 - Keeps the original audio language plus your preferred languages, one track per language at the preferred channel
   count, and drops the rest
+- Optionally extracts text subtitles to UTF-8 `.srt` files next to the output
 - Strips all metadata and cover art, and tags every audio track with its language and channel layout
 - Skips files that already meet the target codec / container / bitrate requirements, only remuxes files whose
   container alone differs, and copies the video stream when only the audio needs re-encoding
@@ -31,7 +32,8 @@ plain MP4 that any player handles.
 - MP4 has no "original" track flag — the original language is marked by being the first (default) track. The flag is
   kept when `target_container` is Matroska.
 - The standalone CLI handles the first audio track only.
-- Subtitles are always dropped from the output.
+- Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
+  VobSub) are dropped.
 - A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
 - Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colours. Profile 7 and 8
   carry an HDR10 base layer and are tone mapped from that.
@@ -86,6 +88,7 @@ defaults:
   target_audio_channel_bitrate: 64  # kbps per channel
   target_audio_languages: [ original, eng, cze ]  # kept in this order
   target_audio_channels: 2          # preferred channel count per language
+  target_subtitle_languages: [ eng, cze ]  # optional, extracted to .srt files
 
 locations:
   - path: movies
@@ -109,6 +112,15 @@ fewest channels above it, otherwise the most channels below it. Tracks flagged a
 hearing impaired, karaoke or lyrics are never kept. The first track is the default one, and each track is tagged with
 its language and channel layout ("Stereo", "Surround 5.1", ...). Tracks within the limits are copied, the rest are
 re-encoded. A video without any audio track is processed into a video-only file.
+
+### Subtitles
+
+Off by default. Each language in `target_subtitle_languages` (ISO 639-2, like audio) that the file has as a **text**
+subtitle is extracted to an external SRT file next to the processed file, named with the two-letter language code:
+`mymovie.mp4` + `mymovie.cs.srt` + `mymovie.en.srt`. One file per language, in the configured list; bitmap subtitles
+(PGS, VobSub) and commentary or hearing-impaired streams are skipped, and there is no `original` shortcut. The SRT
+files are always written as UTF-8, a legacy codepage (e.g. Windows-1250) is detected and converted. A failed
+extraction is logged as a warning and never fails the file.
 
 A location can also be reconfigured at runtime without restarting the service by dropping a
 `.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.

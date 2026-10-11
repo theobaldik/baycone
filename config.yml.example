@@ -44,6 +44,11 @@ defaults:
   # win, else the most channels below it.
   target_audio_channels: 2
 
+  # Text subtitles extracted to '<name>.<2-letter lang>.srt' (e.g. movie.cs.srt) next to the processed file, always
+  # as UTF-8. ISO 639-2 codes, in this order, one per language. Bitmap subtitles (PGS, VobSub) are skipped.
+  # Empty (default) disables the extraction.
+  target_subtitle_languages: [ ]
+
 # Watched directories. Relative paths are resolved against BAYCONE_LOCATIONS.
 locations:
   - path: movies

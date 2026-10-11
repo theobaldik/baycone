@@ -99,6 +99,9 @@ class DefaultsConfig(Serializable):
     target_audio_languages: list[str] = field(default_factory=lambda: ["original", "eng", "cze"])
     target_audio_channels: int = 2
 
+    # Text subtitles of these languages are extracted to `<name>.<lang>.srt` next to the processed file
+    target_subtitle_languages: list[str] = field(default_factory=list)
+
     limit_video_bitrate: int = 2800
     limit_video_height: int = 1080
     limit_audio_channel_bitrate: int = 96

@@ -46,6 +46,9 @@ Two tests guard against past data-loss/logic bugs — keep them:
 - `baycone/audio.py` — `AudioStream` (probed), `AudioTrack` (output) and `select_audio_tracks()`, a pure function
   picking `target_audio_languages` in order (`original` stands for the original track's language, which is kept when
   nothing matches), one track per language by `target_audio_channels`
+- `baycone/subtitles.py` — `SubtitleStream` and `select_subtitle_streams()` (text codecs only, `target_subtitle_languages`
+  in order), `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
+  Extracted by `Encoder._extract_subtitles()` after optimize; a failure there only warns
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /

@@ -30,6 +30,7 @@ def all_commands() -> list[list[str]]:
         ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
         ffmpeg.get_cmd_cropdetect(INPUT),
         ffmpeg.get_cmd_ffprobe(INPUT),
+        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1),
     ]
 
 
@@ -55,8 +56,9 @@ class TestBinaryPaths:
 
     def test_ffmpeg_path_is_configurable(self, default_binaries):
         config.ffmpeg_path = "/opt/ffmpeg/bin/ffmpeg"
-        for cmd in all_commands()[:-1]:
-            assert cmd[0] == "/opt/ffmpeg/bin/ffmpeg"
+        for cmd in all_commands():
+            if cmd[0] != "ffprobe":
+                assert cmd[0] == "/opt/ffmpeg/bin/ffmpeg"
 
     def test_ffprobe_path_is_configurable(self, default_binaries):
         config.ffprobe_path = "/opt/ffmpeg/bin/ffprobe"
@@ -80,13 +82,19 @@ class TestCommandContent:
         assert cmd[cmd.index("-c:v") + 1] == "copy"
         assert "-pass" not in cmd
 
-    def test_subtitles_are_never_mapped(self):
-        for cmd in all_commands():
+    def test_subtitles_are_only_mapped_by_the_extraction(self):
+        for cmd in all_commands()[:-1]:
             assert not [arg for arg in cmd if arg.startswith("0:s")]
             assert "0" not in value_of(cmd, "-map")
 
+    def test_extracts_the_subtitle_stream_to_srt(self):
+        cmd = ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 2)
+        assert value_of(cmd, "-map") == ["0:s:2"]
+        assert value_of(cmd, "-c:s") == ["srt"]
+        assert cmd[-1] == str(OUTPUT.absolute())
+
     def test_cover_art_is_never_mapped(self):
-        for cmd in all_commands()[:-1]:
+        for cmd in all_commands()[:-2]:
             assert value_of(cmd, "-map")[0] == "0:V:0"
 
     def test_video_only_without_audio_tracks(self):

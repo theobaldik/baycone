@@ -89,6 +89,14 @@ class TestConfig:
         cfg = parse("defaults:\nlocations:\n")
         assert cfg.locations == []
 
+    def test_subtitles_are_off_by_default_and_overridable_per_location(self):
+        cfg = parse(
+            "defaults:\n  target_subtitle_languages: [eng]\n"
+            "locations:\n  - path: a\n  - path: b\n    target_subtitle_languages: [cze]\n"
+        )
+        assert DefaultsConfig().target_subtitle_languages == []
+        assert [lc.target_subtitle_languages for lc in cfg.locations] == [["eng"], ["cze"]]
+
     def test_roundtrips_through_to_dict(self):
         cfg = parse("defaults:\n  target_video_bitrate: 1500\nlocations:\n  - path: movies\n")
         restored = Config()
