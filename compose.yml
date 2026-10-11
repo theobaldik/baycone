@@ -1,7 +1,7 @@
 services:
   baycone:
     container_name: baycone
-    image: theobaldik/baycone:0.1.0
+    image: theobaldik/baycone:0.2.0
     # Host uid:gid that owns the mounted media. 1000:1000 is the image default;
     # change it if `id -u` / `id -g` on the host differ.
     user: "1000:1000"
@@ -9,8 +9,8 @@ services:
       context: .
       tags:
         - "theobaldik/baycone:latest"
-        - "theobaldik/baycone:0.1"
-        - "theobaldik/baycone:0.1.0"
+        - "theobaldik/baycone:0.2"
+        - "theobaldik/baycone:0.2.0"
     environment:
       # Override these to change paths without rebuilding the image.
       BAYCONE_CONFIG: /config/config.yml

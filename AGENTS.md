@@ -140,7 +140,7 @@ For example, with `v1.2.0` released: a fix for `1.1.0` goes to `support/v1.1.x`,
 - Allowed groups, in exactly this order: `### Changed`, `### Added`, `### Removed`, `### Fixed`. Nothing else — no
   `Deprecated`, no `Security` (deprecations go under `Changed`), no `Notes`, and never an `Unreleased` section
 - One line per entry, imperative present tense, self-describing without its heading ("Add `--optimize` flag", not
-  "added optimize flag" or "optimize flag"), followed by a reference: ``- Add X ([`abc1234`](url))``
+  "added optimize flag" or "optimize flag"), short and without commit references
 - Breaking changes are prefixed `**Breaking:**` and listed first within their group
 - A release may open with a single one-sentence notice (`_Initial release._`)
 - Never paste commit messages, PR titles, or `feat:`-style prefixes into the changelog — rewrite them for humans

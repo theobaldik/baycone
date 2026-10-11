@@ -128,7 +128,7 @@ There is usually no need to override the variables when running in Docker.
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.1.0
+    image: theobaldik/baycone:0.2.0
     user: "1000:1000"
     environment:
       BAYCONE_CONFIG: /config/config.yml
