@@ -82,7 +82,8 @@ logging.
 - Audio bitrate is **per-channel** (`target_audio_channel_bitrate × channels`)
 - `Config → DefaultsConfig → LocationConfig` hierarchy; every location inherits defaults and can override
   (`Config.from_dict` seeds each location with `defaults.to_dict()` before applying its own keys)
-- Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` before comparing
+- Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` (backed by
+  `pycountry`) before comparing
 - Special audio tracks (commentary, audio description, ...) are detected by ffprobe disposition only and always dropped;
   `dub` is not special
 - `FileInfo.file_path` setter auto-resolves `LocationConfig` and `SpecialDirs` from the global `config.locations`

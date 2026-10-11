@@ -1,3 +1,4 @@
+import pycountry
 import pytest
 
 from baycone.audio import AudioStream, AudioTrack, cap_bitrate, normalize_language, select_audio_tracks
@@ -41,6 +42,12 @@ class TestNormalizeLanguage:
     @pytest.mark.parametrize("code,expected", [("cze", "ces"), ("ces", "ces"), ("GER", "deu"), ("eng", "eng")])
     def test_bibliographic_codes_become_terminology_codes(self, code, expected):
         assert normalize_language(code) == expected
+
+    def test_every_bibliographic_code_is_covered(self):
+        pairs = [(lang.bibliographic, lang.alpha_3) for lang in pycountry.languages if hasattr(lang, "bibliographic")]
+        assert pairs
+        for bibliographic, terminology in pairs:
+            assert normalize_language(bibliographic) == terminology
 
     @pytest.mark.parametrize("code", ["", "  "])
     def test_empty_is_undefined(self, code):

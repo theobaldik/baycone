@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pycountry
+
 from baycone.config import LocationConfig
 
 UNDEFINED_LANGUAGE = "und"
@@ -13,30 +15,6 @@ TRACK_NAMES: dict[int, str] = {
     6: "Surround 5.1",
     8: "Surround 7.1",
     9: "Surround 7.2",
-}
-
-# ISO 639-2/B codes and their /T equivalents both occur in the wild, MP4 requires /T
-BIBLIOGRAPHIC_LANGUAGES: dict[str, str] = {
-    "alb": "sqi",
-    "arm": "hye",
-    "baq": "eus",
-    "bur": "mya",
-    "chi": "zho",
-    "cze": "ces",
-    "dut": "nld",
-    "fre": "fra",
-    "geo": "kat",
-    "ger": "deu",
-    "gre": "ell",
-    "ice": "isl",
-    "mac": "mkd",
-    "mao": "mri",
-    "may": "msa",
-    "per": "fas",
-    "rum": "ron",
-    "slo": "slk",
-    "tib": "bod",
-    "wel": "cym",
 }
 
 # Tracks with any of these ffprobe dispositions are never kept; 'dub' is not one of them, dubs are regular languages
@@ -53,7 +31,9 @@ SPECIAL_DISPOSITIONS: tuple[str, ...] = (
 
 def normalize_language(code: str) -> str:
     code = code.strip().lower()
-    return BIBLIOGRAPHIC_LANGUAGES.get(code, code) or UNDEFINED_LANGUAGE
+    # ISO 639-2/B and /T codes both occur in the wild, MP4 requires /T
+    language = pycountry.languages.get(bibliographic=code)
+    return (language.alpha_3 if language else code) or UNDEFINED_LANGUAGE
 
 
 def cap_bitrate(source: int, target: int) -> int:

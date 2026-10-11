@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 
 # Bitmap subtitles (PGS, VobSub, DVB) cannot be converted to SRT
 TEXT_SUBTITLE_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+SRT_CODECS = {"subrip", "srt"}
 
 
 @dataclass

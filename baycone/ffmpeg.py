@@ -223,6 +223,7 @@ CMD_FFMPEG_CROPDETECT = [
     "-",
 ]
 
+# Decoding SubRip fails on a legacy codepage, so it is copied as is and converted to UTF-8 afterwards
 CMD_FFMPEG_EXTRACT_SUBTITLE = [
     "{ffmpeg}",
     "-y",
@@ -234,7 +235,7 @@ CMD_FFMPEG_EXTRACT_SUBTITLE = [
     "-map",
     "0:s:{source}",
     "-c:s",
-    "srt",
+    "{codec}",
     "{output_file}",
 ]
 
@@ -358,12 +359,13 @@ def get_cmd_cropdetect(input_file: Path) -> list[str]:
     return _render(CMD_FFMPEG_CROPDETECT, input_file=input_file.absolute())
 
 
-def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int) -> list[str]:
+def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int, copy: bool) -> list[str]:
     return _render(
         CMD_FFMPEG_EXTRACT_SUBTITLE,
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
         source=source,
+        codec="copy" if copy else "srt",
     )
 
 

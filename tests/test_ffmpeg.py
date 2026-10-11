@@ -30,7 +30,7 @@ def all_commands() -> list[list[str]]:
         ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
         ffmpeg.get_cmd_cropdetect(INPUT),
         ffmpeg.get_cmd_ffprobe(INPUT),
-        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1),
+        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1, copy=False),
     ]
 
 
@@ -88,10 +88,13 @@ class TestCommandContent:
             assert "0" not in value_of(cmd, "-map")
 
     def test_extracts_the_subtitle_stream_to_srt(self):
-        cmd = ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 2)
+        cmd = ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 2, copy=False)
         assert value_of(cmd, "-map") == ["0:s:2"]
         assert value_of(cmd, "-c:s") == ["srt"]
         assert cmd[-1] == str(OUTPUT.absolute())
+
+    def test_srt_is_copied_without_decoding(self):
+        assert value_of(ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 0, copy=True), "-c:s") == ["copy"]
 
     def test_cover_art_is_never_mapped(self):
         for cmd in all_commands()[:-2]:

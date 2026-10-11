@@ -20,7 +20,7 @@ from baycone.audio import (
     select_audio_tracks,
 )
 from baycone.config import config, LocationConfig, SpecialDirs
-from baycone.subtitles import SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
+from baycone.subtitles import SRT_CODECS, SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
 
 log = logging.getLogger(__name__)
 
@@ -480,7 +480,10 @@ class Encoder:
         for stream in file_info.subtitle_tracks:
             path = file_info.subtitle_path(stream.lang)
             try:
-                self._run_ffmpeg(ffmpeg.get_cmd_extract_subtitle(file_info.file_path, path, stream.index), "Subtitles")
+                cmd = ffmpeg.get_cmd_extract_subtitle(
+                    file_info.file_path, path, stream.index, stream.codec in SRT_CODECS
+                )
+                self._run_ffmpeg(cmd, "Subtitles")
                 ensure_utf8(path)
                 log.info(f"Subtitles saved to '{path}'")
             except Exception as e:
