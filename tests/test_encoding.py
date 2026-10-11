@@ -174,6 +174,13 @@ class TestGetFileInfo:
     def test_video_codec_extracted(self, media_file):
         assert self._info(media_file, video_codec="hevc").video_stream.codec == "hevc"
 
+    def test_cover_art_is_not_the_video(self, media_file):
+        output = json.loads(make_ffprobe_output(video_codec="hevc"))
+        cover = {"codec_type": "video", "codec_name": "png", "width": 300, "height": 300}
+        output["streams"].insert(0, cover | {"disposition": {"attached_pic": 1}})
+        info = analyze(media_file, json.dumps(output), method=Analyzer._get_file_info)
+        assert (info.video_stream.codec, info.video_stream.width) == ("hevc", 1920)
+
     def test_video_bitrate_converted_to_kbps(self, media_file):
         assert self._info(media_file, video_bitrate=2_000_000).video_stream.bitrate == 2000
 
@@ -367,6 +374,15 @@ class TestEncoderProcess:
         info = FileInfo(media_file, is_valid=False)
         self._process(Encoder(), info, media_file, encode={"return_value": False})
         assert not [m for m in caplog.messages if m.startswith(("Processing '", "Video:", "Audio:"))]
+
+    def test_invalid_file_is_never_archived(self, media_file, special_dirs):
+        info = FileInfo(media_file, is_valid=False)
+        result, encode, optimize, archive, cleanup = self._process(Encoder(), info, media_file)
+        assert result is False
+        encode.assert_not_called()
+        optimize.assert_not_called()
+        archive.assert_not_called()
+        cleanup.assert_called_once()
 
     def test_skips_encode_when_not_needed(self, media_file, special_dirs):
         encoder = Encoder()
@@ -567,11 +583,13 @@ class TestEncoderEncode:
             assert encoder._encode() is False
         mock_popen.assert_not_called()
 
-    def test_returns_false_when_no_audio_tracks(self, media_file, special_dirs):
+    def test_encodes_video_without_audio_tracks(self, media_file, special_dirs):
         encoder = self._encoder(media_file, audio_tracks=[])
-        with patch("baycone.encoding.subprocess.Popen") as mock_popen:
-            assert encoder._encode() is False
-        mock_popen.assert_not_called()
+        with patch(
+            "baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]
+        ) as mock_popen:
+            assert encoder._encode() is True
+        assert mock_popen.call_count == 2
 
     def test_returns_false_when_first_pass_fails(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
@@ -666,11 +684,11 @@ class TestEncoderOptimize:
         with patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()):
             assert encoder._optimize(encoded=False) is True
 
-    def test_returns_false_when_no_audio_tracks(self, media_file, special_dirs):
+    def test_optimizes_video_without_audio_tracks(self, media_file, special_dirs):
         encoder = self._encoder(media_file, audio_tracks=[])
-        with patch("baycone.encoding.subprocess.Popen") as mock_popen:
-            assert encoder._optimize(encoded=False) is False
-        mock_popen.assert_not_called()
+        with patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()) as mock_popen:
+            assert encoder._optimize(encoded=False) is True
+        mock_popen.assert_called_once()
 
     def test_returns_false_on_ffmpeg_failure(self, media_file, special_dirs):
         encoder = self._encoder(media_file)

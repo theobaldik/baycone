@@ -7,7 +7,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from baycone import ffmpeg
-from baycone.audio import AudioStream, AudioTrack
+from baycone.audio import AudioStream, AudioTrack, normalize_language
 from baycone.config import Constants
 
 EXT_PROCESSED = ".mp4"
@@ -97,15 +97,17 @@ def transcode_1_pass(input_file: Path, video_bitrate: int, duration: float) -> N
     run_process(cmd, duration, "Transcoding 1st pass: {percent:.2f} %")
 
 
-def transcode_2_pass(input_file: Path, video_bitrate: int, audio_track: AudioTrack, duration: float) -> None:
+def transcode_2_pass(input_file: Path, video_bitrate: int, audio_tracks: list[AudioTrack], duration: float) -> None:
     passlog_file = get_file_passlog(input_file)
     output_file = get_file_transcoded(input_file)
-    cmd = ffmpeg.get_cmd_encode_movie_pass_2(input_file, output_file, passlog_file, video_bitrate, [], [audio_track])
+    cmd = ffmpeg.get_cmd_encode_movie_pass_2(input_file, output_file, passlog_file, video_bitrate, [], audio_tracks)
     run_process(cmd, duration, "Transcoding 2nd pass: {percent:.2f} %")
 
 
-def optimize(input_file: Path, output_file: Path, audio_track: AudioTrack, encoded: bool, duration: float) -> None:
-    cmd = ffmpeg.get_cmd_optimize(input_file, output_file, [audio_track], encoded)
+def optimize(
+    input_file: Path, output_file: Path, audio_tracks: list[AudioTrack], encoded: bool, duration: float
+) -> None:
+    cmd = ffmpeg.get_cmd_optimize(input_file, output_file, audio_tracks, encoded)
     run_process(cmd, duration, "Optimizing: {percent:.2f} %")
 
 
@@ -168,29 +170,33 @@ def main() -> int:
 
         duration = float(file_info.get("format", {}).get("duration", 0))
 
-        audio_streams = [s for s in file_info.get("streams", []) if s.get("codec_type") == "audio"]
-        audio_channels = int(audio_streams[0].get("channels", 1)) if audio_streams else 1
-
         # The CLI keeps only the first audio stream
-        audio_track = AudioTrack(
-            AudioStream(channels=audio_channels, lang=args.language),
-            bitrate=args.audio_bitrate * audio_channels,
-            default=True,
-        )
+        audio_tracks = []
+        audio_streams = [s for s in file_info.get("streams", []) if s.get("codec_type") == "audio"]
+        if audio_streams:
+            audio_channels = int(audio_streams[0].get("channels", 1))
+            audio_tracks.append(
+                AudioTrack(
+                    AudioStream(channels=audio_channels, lang=normalize_language(args.language)),
+                    bitrate=args.audio_bitrate * audio_channels,
+                    default=True,
+                )
+            )
 
         prepare_dirs(input_path, not args.optimize)
 
         if args.optimize:
-            optimize(input_path, processed_path, audio_track, False, duration)
+            optimize(input_path, processed_path, audio_tracks, False, duration)
             return 0
 
         output_path = get_file_transcoded(input_path)
 
-        transcode_1_pass(input_path, args.video_bitrate, duration)
-        transcode_2_pass(input_path, args.video_bitrate, audio_track, duration)
-        optimize(output_path, processed_path, audio_track, True, duration)
-
-        clear_dirs(input_path)
+        try:
+            transcode_1_pass(input_path, args.video_bitrate, duration)
+            transcode_2_pass(input_path, args.video_bitrate, audio_tracks, duration)
+            optimize(output_path, processed_path, audio_tracks, True, duration)
+        finally:
+            clear_dirs(input_path)
 
         return 0
 

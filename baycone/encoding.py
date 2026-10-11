@@ -174,7 +174,10 @@ class Analyzer:
 
         streams = probe_result.get("streams", [])
 
-        video_streams = [s for s in streams if s.get("codec_type") == "video"]
+        # Cover art is a video stream too; it is never the movie and is always dropped (`0:V` in the commands)
+        video_streams = [
+            s for s in streams if s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic")
+        ]
         if video_streams:
             video = video_streams[0]
             file_info.video_stream.codec = video.get("codec_name", "")
@@ -261,15 +264,18 @@ class Encoder:
         self._processing_file = Analyzer.analyze(file_path)
 
         try:
-            if self._processing_file.is_valid:
-                log.info(
-                    f"Processing '{self._processing_file.relative_path}'"
-                    f" ({_format_duration(self._processing_file.duration)})"
-                )
-                # Decodes keyframes of the whole file, only worth it when the video is encoded anyway
-                if self._processing_file.video_stream.shall_encode:
-                    Analyzer.detect_crop(file_path, self._processing_file.video_stream)
-                self._log_plan()
+            if not self._processing_file.is_valid:
+                log.error(f"Processing aborted: Invalid file '{file_path}'")
+                return False
+
+            log.info(
+                f"Processing '{self._processing_file.relative_path}'"
+                f" ({_format_duration(self._processing_file.duration)})"
+            )
+            # Decodes keyframes of the whole file, only worth it when the video is encoded anyway
+            if self._processing_file.video_stream.shall_encode:
+                Analyzer.detect_crop(file_path, self._processing_file.video_stream)
+            self._log_plan()
 
             # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
             shall_encode = self._processing_file.video_stream.shall_encode or any(
@@ -383,10 +389,6 @@ class Encoder:
             log.error(f"Encoding skipped: Invalid file for encoding: '{file_info.file_path}'")
             return False
 
-        if not file_info.audio_tracks:
-            log.error(f"Encoding skipped: No audio streams found in '{file_info.file_path}'")
-            return False
-
         video_bitrate = self._target_video_bitrate()
         video_filters = list(self._video_filters().values())
 
@@ -423,10 +425,6 @@ class Encoder:
         return False
 
     def _optimize(self, encoded: bool) -> bool:
-        if not self._processing_file.audio_tracks:
-            log.error(f"Optimizing skipped: No audio streams found in '{self._processing_file.file_path}'")
-            return False
-
         self._processing_file.processed_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = ffmpeg.get_cmd_optimize(
             self._processing_file.encoding_path if encoded else self._processing_file.file_path,

@@ -16,7 +16,7 @@ plain MP4 that any player handles.
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
 - Keeps the original audio language plus your preferred languages, one track per language at the preferred channel
   count, and drops the rest
-- Strips all metadata and tags every audio track with its language and channel layout
+- Strips all metadata and cover art, and tags every audio track with its language and channel layout
 - Skips files that already meet the target codec / container / bitrate requirements, only remuxes files whose
   container alone differs, and copies the video stream when only the audio needs re-encoding
 - Waits for files that are still being copied in, and never touches the original until the encoded result has been
@@ -107,7 +107,7 @@ When a language has several tracks, the one with `target_audio_channels` channel
 fewest channels above it, otherwise the most channels below it. Tracks flagged as commentary, audio description,
 hearing impaired, karaoke or lyrics are never kept. The first track is the default one, and each track is tagged with
 its language and channel layout ("Stereo", "Surround 5.1", ...). Tracks within the limits are copied, the rest are
-re-encoded.
+re-encoded. A video without any audio track is processed into a video-only file.
 
 A location can also be reconfigured at runtime without restarting the service by dropping a
 `.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.

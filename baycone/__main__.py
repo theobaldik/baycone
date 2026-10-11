@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from types import FrameType
 
+import yaml
+
 from baycone import config
 from baycone.encoding import Encoder
 from baycone.logger import setup_logging
@@ -50,7 +52,11 @@ class Service:
             log.error(f"Mandatory environment variables are not set: {", ".join(missing_envs)}")
             return 1
 
-        config.load_config(Path(config.Constants.FILE_CONFIG))
+        try:
+            config.load_config(Path(config.Constants.FILE_CONFIG))
+        except (OSError, yaml.YAMLError) as e:
+            log.error(f"Configuration '{config.Constants.FILE_CONFIG}' could not be loaded: {e}")
+            return 1
         self._init_watchers()
         log.info("Service started")
 

@@ -85,10 +85,22 @@ class TestCommandContent:
             assert not [arg for arg in cmd if arg.startswith("0:s")]
             assert "0" not in value_of(cmd, "-map")
 
+    def test_cover_art_is_never_mapped(self):
+        for cmd in all_commands()[:-1]:
+            assert value_of(cmd, "-map")[0] == "0:V:0"
+
+    def test_video_only_without_audio_tracks(self):
+        for cmd in (
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], []),
+            ffmpeg.get_cmd_optimize(INPUT, OUTPUT, [], encoded=False),
+        ):
+            assert not [arg for arg in value_of(cmd, "-map") if arg.startswith("0:a")]
+            assert not [arg for arg in cmd if ":a:" in arg]
+
     def test_cropdetect_reads_keyframes_of_the_first_video_stream(self):
         cmd = ffmpeg.get_cmd_cropdetect(INPUT)
         assert value_of(cmd, "-skip_frame") == ["nokey"]
-        assert value_of(cmd, "-map") == ["0:v:0"]
+        assert value_of(cmd, "-map") == ["0:V:0"]
         assert value_of(cmd, "-vf")[0].startswith("cropdetect=")
 
     def test_faststart_is_requested(self):
@@ -108,7 +120,7 @@ class TestAudioEncodeArgs:
         ],
     )
     def test_maps_source_streams_in_output_order(self, cmd):
-        assert value_of(cmd, "-map") == ["0:v:0", "0:a:2", "0:a:0"]
+        assert value_of(cmd, "-map") == ["0:V:0", "0:a:2", "0:a:0"]
 
     def test_encodes_only_tracks_with_a_bitrate(self):
         cmd = ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS)
@@ -126,11 +138,11 @@ class TestAudioMetadataArgs:
 
     def test_maps_source_streams_when_not_encoded(self):
         cmd = ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False)
-        assert value_of(cmd, "-map") == ["0:v", "0:a:2", "0:a:0"]
+        assert value_of(cmd, "-map") == ["0:V:0", "0:a:2", "0:a:0"]
 
     def test_maps_by_position_when_encoded(self):
         cmd = ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=True)
-        assert value_of(cmd, "-map") == ["0:v", "0:a:0", "0:a:1"]
+        assert value_of(cmd, "-map") == ["0:V:0", "0:a:0", "0:a:1"]
 
     def test_tags_every_track(self):
         cmd = ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False)

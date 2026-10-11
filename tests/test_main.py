@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from baycone.__main__ import Service
+from baycone.config import Constants
 
 
 @pytest.fixture
@@ -71,4 +72,14 @@ class TestStart:
     def test_fails_without_env_variables(self, service, monkeypatch):
         monkeypatch.delenv("BAYCONE_LOCATIONS", raising=False)
         monkeypatch.delenv("BAYCONE_CONFIG", raising=False)
+        assert service.start() == 1
+
+    @pytest.mark.parametrize("content", [None, "locations: [\n"], ids=["missing", "invalid"])
+    def test_fails_on_unreadable_config(self, service, monkeypatch, tmp_path, content):
+        config_file = tmp_path / "config.yml"
+        if content is not None:
+            config_file.write_text(content)
+        monkeypatch.setenv("BAYCONE_LOCATIONS", str(tmp_path))
+        monkeypatch.setenv("BAYCONE_CONFIG", str(config_file))
+        monkeypatch.setattr(Constants, "FILE_CONFIG", str(config_file))
         assert service.start() == 1
