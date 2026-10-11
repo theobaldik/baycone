@@ -10,7 +10,7 @@ import yaml
 from baycone import config
 from baycone.encoding import Encoder
 from baycone.logger import setup_logging
-from baycone.watcher import DirWatcher
+from baycone.watcher import DirWatcher, FileChangeTracker
 
 log = logging.getLogger(__name__)
 
@@ -20,10 +20,22 @@ class Service:
         self._watchers: list[DirWatcher] = []
         self._encoder: Encoder = Encoder()
         self._stop_signal: bool = False
+        self._config_file: FileChangeTracker | None = None
 
-    def _init_watchers(self) -> None:
-        for lc in config.config.locations:
-            self._watchers.append(DirWatcher(lc))
+    def _load_config(self) -> None:
+        config.load_config(self._config_file.file_path)
+        self._watchers = [DirWatcher(lc) for lc in config.config.locations]
+
+    def _reload_config(self) -> None:
+        """A failed reload keeps the previous config; it is retried once the file changes again."""
+        if not self._config_file.changed():
+            return
+        try:
+            self._load_config()
+        except Exception as e:
+            log.error(f"Configuration '{self._config_file.file_path}' not reloaded, keeping the previous one: {e}")
+            return
+        log.info(f"Configuration '{self._config_file.file_path}' reloaded")
 
     def _process_next(self) -> bool:
         """Returns `True` if a file was picked up."""
@@ -42,6 +54,7 @@ class Service:
 
     def main_loop(self) -> None:
         while not self._stop_signal:
+            self._reload_config()
             if not self._process_next():
                 time.sleep(config.config.poll_interval)
 
@@ -52,12 +65,14 @@ class Service:
             log.error(f"Mandatory environment variables are not set: {", ".join(missing_envs)}")
             return 1
 
+        self._config_file = FileChangeTracker(Path(config.Constants.FILE_CONFIG))
+        # Primed before reading, so an edit made during the read is picked up by the next check
+        self._config_file.changed()
         try:
-            config.load_config(Path(config.Constants.FILE_CONFIG))
+            self._load_config()
         except (OSError, yaml.YAMLError) as e:
             log.error(f"Configuration '{config.Constants.FILE_CONFIG}' could not be loaded: {e}")
             return 1
-        self._init_watchers()
         log.info("Service started")
 
         # PID 1 in a container ignores SIGTERM without a handler, so `docker stop` would wait for SIGKILL

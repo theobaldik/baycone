@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from baycone.config import Constants
-from baycone.watcher import DirWatcher
+from baycone.watcher import DirWatcher, FileChangeTracker
 
 
 @pytest.fixture
@@ -23,6 +23,39 @@ def modify(file_path: Path) -> None:
         f.write(b"x")
     stat = file_path.stat()
     os.utime(file_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+
+class TestFileChangeTracker:
+    def test_existing_file_is_a_change_on_first_call(self, tmp_path):
+        file_path = tmp_path / "config.yml"
+        file_path.write_text("a")
+        assert FileChangeTracker(file_path).changed() is True
+
+    def test_missing_file_is_no_change_on_first_call(self, tmp_path):
+        assert FileChangeTracker(tmp_path / "config.yml").changed() is False
+
+    def test_unchanged_file(self, tmp_path):
+        file_path = tmp_path / "config.yml"
+        file_path.write_text("a")
+        tracker = FileChangeTracker(file_path)
+        tracker.changed()
+        assert tracker.changed() is False
+
+    def test_modified_file(self, tmp_path):
+        file_path = tmp_path / "config.yml"
+        file_path.write_text("a")
+        tracker = FileChangeTracker(file_path)
+        tracker.changed()
+        modify(file_path)
+        assert tracker.changed() is True
+
+    def test_deleted_file(self, tmp_path):
+        file_path = tmp_path / "config.yml"
+        file_path.write_text("a")
+        tracker = FileChangeTracker(file_path)
+        tracker.changed()
+        file_path.unlink()
+        assert tracker.changed() is True
 
 
 class TestInit:

@@ -1,3 +1,5 @@
+from copy import deepcopy
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -5,6 +7,15 @@ import pytest
 from baycone.config import Constants, LocationConfig, config
 
 LOCATION_NAME = "movies"
+
+
+@pytest.fixture(autouse=True)
+def restore_config():
+    """`load_config` replaces the global config, which would leak into later tests."""
+    saved = {f.name: deepcopy(getattr(config, f.name)) for f in fields(config)}
+    yield
+    for name, value in saved.items():
+        setattr(config, name, value)
 
 
 @pytest.fixture

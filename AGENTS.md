@@ -4,7 +4,7 @@
 
 - **Install deps:** `uv sync`
 - **Run tests:** `uv run pytest`
-- **Run locally:** `BAYCONE_CONFIG=config.yml BAYCONE_LOCATIONS=/your/media uv run python -m baycone`
+- **Run locally:** `BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run python -m baycone`
 - **Docker build/run:** `docker compose build && docker compose up -d`
 - **Format:** `black .` (line-length 120, target `py314`) — configured under `[tool.black]` in `pyproject.toml`, so
   never pass those as flags. Not a declared dev dependency: it resolves from PATH / a global `uv tool` install, not from
@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (280 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (292 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -41,8 +41,11 @@ Two tests guard against past data-loss/logic bugs — keep them:
 
 - `baycone/__main__.py` — Service entry point; `Service` class + `main_loop`. SIGTERM is turned into
   `KeyboardInterrupt` (PID 1 in a container ignores it otherwise), and a running ffmpeg is killed on interruption.
-- `baycone/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()` mutates this
-  in-place. Other modules import `from baycone.config import config` and read from it at runtime.
+  `config.yml` is hot-reloaded at the top of each `main_loop` iteration (`FileChangeTracker` mtime check, the same one
+  `DirWatcher` uses for `config.override.yml`); a reload rebuilds the watchers, a failed one keeps the previous config.
+  Docker mounts the config **directory** — a single-file bind mount misses editors' write-and-rename saves.
+- `baycone/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()` replaces
+  its fields in place (removed keys fall back to defaults, a failed load leaves it untouched, an empty file is ignored). Other modules import `from baycone.config import config` and read from it at runtime.
 - `baycone/audio.py` — `AudioStream` (probed), `AudioTrack` (output) and `select_audio_tracks()`, a pure function
   picking `target_audio_languages` in order (`original` stands for the original track's language, which is kept when
   nothing matches), one track per language by `target_audio_channels`

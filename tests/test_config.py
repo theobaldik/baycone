@@ -120,6 +120,27 @@ class TestLoadConfig:
         cfg_file.write_text("")
         load_config(cfg_file)  # must not raise
 
+    def test_removed_key_falls_back_to_default(self, tmp_path):
+        cfg_file = tmp_path / "config.yml"
+        cfg_file.write_text("poll_interval: 9.0\ndefaults:\n  target_video_bitrate: 1500\n")
+        load_config(cfg_file)
+        cfg_file.write_text("locations:\n  - path: movies\n")
+        load_config(cfg_file)
+
+        assert config_module.config.poll_interval == Config().poll_interval
+        assert config_module.config.defaults.target_video_bitrate == DefaultsConfig().target_video_bitrate
+        assert config_module.config.locations[0].target_video_bitrate == DefaultsConfig().target_video_bitrate
+
+    def test_invalid_file_leaves_config_untouched(self, tmp_path):
+        cfg_file = tmp_path / "config.yml"
+        cfg_file.write_text("poll_interval: 9.0\n")
+        load_config(cfg_file)
+        cfg_file.write_text("locations: [\n")
+
+        with pytest.raises(yaml.YAMLError):
+            load_config(cfg_file)
+        assert config_module.config.poll_interval == 9.0
+
 
 class TestLoadConfigOverride:
     @pytest.fixture

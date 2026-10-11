@@ -25,7 +25,7 @@ services:
     image: theobaldik/baycone:0.3.0
     user: "1000:1000"
     volumes:
-      - ./config.yml:/config/config.yml:ro
+      - ./config:/config:ro
       - /your/movies:/locations/movies
 ```
 

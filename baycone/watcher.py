@@ -10,13 +10,33 @@ log = logging.getLogger(__name__)
 type Signature = tuple[int, int]
 
 
+class FileChangeTracker:
+    """A missing file counts as mtime `None`, so its deletion is a change too."""
+
+    def __init__(self, file_path: Path) -> None:
+        self.file_path: Path = file_path
+        self._mtime: int | None = None
+
+    def changed(self) -> bool:
+        """Whether the mtime differs from the previous call."""
+        try:
+            mtime = self.file_path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+
+        if mtime == self._mtime:
+            return False
+        self._mtime = mtime
+        return True
+
+
 class DirWatcher:
 
     def __init__(self, location_config: LocationConfig) -> None:
         self._dir_path: Path = location_config.abspath
         self._location_config: LocationConfig = location_config
         self._base_config: dict = location_config.to_dict()
-        self._override_mtime: int | None = None
+        self._override_file: FileChangeTracker = FileChangeTracker(self._dir_path / Constants.FILE_CONFIG_OVERRIDE)
 
         # A file is ready once its signature is unchanged since the previous scan
         self._signatures: dict[Path, Signature] = {}
@@ -69,13 +89,7 @@ class DirWatcher:
                     yield file_path
 
     def _reload_config_override(self) -> None:
-        try:
-            mtime = (self._dir_path / Constants.FILE_CONFIG_OVERRIDE).stat().st_mtime_ns
-        except OSError:
-            mtime = None
-
-        if mtime != self._override_mtime:
-            self._override_mtime = mtime
+        if self._override_file.changed():
             config.load_config_override(self._location_config, self._base_config)
 
     def _create_special_dirs(self) -> None:

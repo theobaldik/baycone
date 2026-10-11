@@ -15,10 +15,11 @@ services:
       # Override these to change paths without rebuilding the image.
       BAYCONE_CONFIG: /config/config.yml
       BAYCONE_LOCATIONS: /locations
-    # Copy config.yml.example to config.yml before the first start, and keep
-    # machine-specific paths in a compose.override.yml (git-ignored) instead of
-    # editing the mounts below.
+    # Copy config.yml.example to config/config.yml before the first start, and
+    # keep machine-specific paths in a compose.override.yml (git-ignored) instead
+    # of editing the mounts below. The config directory (not the file) is mounted,
+    # so edits are seen by the running service and the config is hot-reloaded.
     volumes:
-      - ./config.yml:/config/config.yml:ro
+      - ./config:/config:ro
       - /your/movies:/locations/movies
       - /your/tv-shows:/locations/tv-shows

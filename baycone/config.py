@@ -151,10 +151,16 @@ config: Config = Config()
 
 
 def load_config(file_path: Path) -> None:
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-        if data:
-            config.from_dict(data)
+    """Replaces `config` in place: keys removed from the file fall back to defaults, a failure leaves it untouched."""
+    data = yaml.safe_load(file_path.read_text(encoding="utf-8"))
+    # An empty file is more likely caught mid-save than meant to drop every location
+    if not data:
+        return
+
+    loaded = Config()
+    loaded.from_dict(data)
+    for config_field in fields(Config):
+        setattr(config, config_field.name, getattr(loaded, config_field.name))
 
 
 def load_config_override(location_config: LocationConfig, base: dict) -> None:

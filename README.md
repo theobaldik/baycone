@@ -53,7 +53,8 @@ videos/
 
 ## Configuration
 
-Copy `config.yml.example` to `config.yml` and edit it. The minimal config is:
+Copy `config.yml.example` to `config/config.yml` (`mkdir config && cp config.yml.example config/config.yml`) and
+edit it. The minimal config is:
 
 ```yaml
 locations:
@@ -126,6 +127,11 @@ A location can also be reconfigured at runtime without restarting the service by
 `.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.
 Removing it restores the location's settings from `config.yml`.
 
+`config.yml` itself is re-read whenever it changes, between files and never during an encode. A file that cannot be
+loaded is logged and the previous configuration stays in use. In Docker, mount the directory holding the config, not
+the file: editors save by replacing the file, which a single-file bind mount does not see. Environment variables still
+need a restart.
+
 ## Environment variables
 
 | Variable            | Default (Docker)     | Description                                |
@@ -147,7 +153,7 @@ services:
       BAYCONE_CONFIG: /config/config.yml
       BAYCONE_LOCATIONS: /locations
     volumes:
-      - ./config.yml:/config/config.yml:ro
+      - ./config:/config:ro
       - /your/movies:/locations/movies
       - /your/tv-shows:/locations/tv-shows
 ```
@@ -192,7 +198,7 @@ Requires Python 3.14, `ffmpeg`, and `ffprobe` on `PATH`.
 
 ```bash
 uv sync
-BAYCONE_CONFIG=config.yml BAYCONE_LOCATIONS=/your/media uv run python -m baycone
+BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run python -m baycone
 ```
 
 ## Standalone CLI
