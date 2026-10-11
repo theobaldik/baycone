@@ -22,7 +22,7 @@ Source, configuration reference and documentation: https://github.com/theobaldik
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.2.0
+    image: theobaldik/baycone:0.3.0
     user: "1000:1000"
     volumes:
       - ./config.yml:/config/config.yml:ro

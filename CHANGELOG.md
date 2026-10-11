@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] - 2026-10-11
+
+### Changed
+
+- **Breaking:** Keep the original audio track only when `original` is listed in `target_audio_languages`; add it to
+  custom lists, the default is now `[ original, eng, cze ]`
+- Order audio tracks by `target_audio_languages`, so `original` can be placed anywhere in the list
+- Keep the original audio track when none of the listed languages is found
+- Resolve ISO 639-2/B audio language codes with `pycountry`
+
+### Added
+
+- Add `target_subtitle_languages` to extract text subtitles to external `.srt` files next to the processed file
+- Name extracted subtitles with the two-letter language code, e.g. `mymovie.cs.srt`
+- Convert extracted subtitles in a legacy codepage to UTF-8
+
 ## [0.2.0] - 2026-10-11
 
 ### Changed
@@ -9,7 +25,7 @@
 
 ### Added
 
-- Add multitrack audio: tracks kept and ordered by `target_audio_languages`, `original` for the original language
+- Add multitrack audio: the original language plus `target_audio_languages`, one track per language
 - Add support for 4K, 10-bit and HDR sources, with black bar cropping
 - Add progress and ETA to the log
 
@@ -38,5 +54,6 @@ _Initial release._
 - Add PlantUML architecture and behaviour diagrams in `docs/`
 - Add MIT license
 
+[0.3.0]: https://github.com/theobaldik/baycone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/theobaldik/baycone/releases/tag/v0.2.0
 [0.1.0]: https://github.com/theobaldik/baycone/releases/tag/v0.1.0
