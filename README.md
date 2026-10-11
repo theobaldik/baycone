@@ -75,9 +75,9 @@ defaults:
   allowed_containers: [ mp4 ]
   allowed_video_codecs: [ h264 ]
   allowed_audio_codecs: [ aac ]
-  limit_video_bitrate: 2800         # kbps — files below this are not re-encoded
+  limit_video_bitrate: 2800         # kbps, h264 equivalent — files below this are not re-encoded
   limit_video_height: 1080          # larger videos are scaled down to fit 1920x1080
-  limit_audio_channel_bitrate: 96   # kbps per channel
+  limit_audio_channel_bitrate: 96   # kbps per channel, aac equivalent
 
   # Used when a file does have to be re-encoded.
   target_extension: .mp4

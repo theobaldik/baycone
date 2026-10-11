@@ -29,6 +29,10 @@ SPECIAL_DISPOSITIONS: tuple[str, ...] = (
 )
 
 
+# aac bitrate needed for the same quality, per kbps of the source codec
+AAC_EFFICIENCY: dict[str, float] = {"opus": 1.5, "vorbis": 1.1, "mp3": 0.75, "ac3": 0.65, "dts": 0.5}
+
+
 def normalize_language(code: str) -> str:
     code = code.strip().lower()
     # ISO 639-2/B and /T codes both occur in the wild, MP4 requires /T
@@ -56,6 +60,14 @@ class AudioStream:
     @property
     def overall_bitrate(self) -> int:
         return self.channel_bitrate * self.channels
+
+    @property
+    def aac_channel_bitrate(self) -> int:
+        return int(self.channel_bitrate * AAC_EFFICIENCY.get(self.codec, 1.0))
+
+    @property
+    def aac_overall_bitrate(self) -> int:
+        return self.aac_channel_bitrate * self.channels
 
     def generate_track_name(self) -> str:
         return TRACK_NAMES.get(self.channels, "")
@@ -108,7 +120,7 @@ def select_audio_tracks(streams: list[AudioStream], location_config: LocationCon
         AudioTrack(
             stream=stream,
             bitrate=(
-                cap_bitrate(stream.overall_bitrate, location_config.target_audio_channel_bitrate * stream.channels)
+                cap_bitrate(stream.aac_overall_bitrate, location_config.target_audio_channel_bitrate * stream.channels)
                 if stream.shall_encode
                 else 0
             ),

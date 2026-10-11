@@ -21,6 +21,7 @@ defaults:
   allowed_containers: [ mp4 ]
   allowed_video_codecs: [ h264 ]
   allowed_audio_codecs: [ aac ]
+  # Source bitrates are compared as their h264 / aac equivalent (e.g. hevc counts 1.5x), also when capping the encode.
   limit_video_bitrate: 2800         # kbps - an unknown bitrate is always re-encoded, also for audio
   # Larger videos are scaled down to fit a 16:9 box of this height (1080 -> 1920x1080). Values above 1080 exceed the
   # h264 level 4.1 the encode is tagged with.

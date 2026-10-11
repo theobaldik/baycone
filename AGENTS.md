@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (231 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (280 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -80,6 +80,8 @@ logging.
 - `logging.getLogger(__name__)` at module level; never `print()` for diagnostics
 - Type hints mandatory on all function signatures and class attributes
 - Audio bitrate is **per-channel** (`target_audio_channel_bitrate × channels`)
+- Source bitrates are converted to their h264 / aac equivalent (`H264_EFFICIENCY`, `AAC_EFFICIENCY`, built in, not
+  configurable) before any limit check or cap; an unknown bitrate stays 0
 - `Config → DefaultsConfig → LocationConfig` hierarchy; every location inherits defaults and can override
   (`Config.from_dict` seeds each location with `defaults.to_dict()` before applying its own keys)
 - Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` (backed by

@@ -193,3 +193,9 @@ class TestTrackOutput:
         location_config = LocationConfig(target_audio_channel_bitrate=64)
         source = stream(0, "eng", channels=2, shall_encode=True)
         assert select_audio_tracks([source], location_config)[0].bitrate == 128
+
+    @pytest.mark.parametrize("codec,channel_bitrate,expected", [("opus", 48, 144), ("opus", 96, 192), ("ac3", 96, 124)])
+    def test_bitrate_capped_as_aac_equivalent(self, codec, channel_bitrate, expected):
+        location_config = LocationConfig(target_audio_channel_bitrate=96)
+        source = AudioStream(codec=codec, channels=2, channel_bitrate=channel_bitrate, shall_encode=True)
+        assert select_audio_tracks([source], location_config)[0].bitrate == expected

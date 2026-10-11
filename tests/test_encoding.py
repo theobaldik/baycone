@@ -325,8 +325,27 @@ class TestAnalyze:
 
     def test_selected_track_needing_encode_gets_a_bitrate(self, media_file, location_config):
         location_config.target_audio_channel_bitrate = 64
-        info = self._analyze(media_file, audio_codec="ac3", audio_bitrate=448_000, audio_channels=6)
+        info = self._analyze(media_file, audio_codec="eac3", audio_bitrate=448_000, audio_channels=6)
         assert info.audio_tracks[0].bitrate == 384
+
+    @pytest.mark.parametrize("video_bitrate,expected", [(2_000_000, True), (1_500_000, False)])
+    def test_video_limit_compares_the_h264_equivalent(self, media_file, location_config, video_bitrate, expected):
+        location_config.allowed_video_codecs = ["h264", "hevc"]
+        location_config.limit_video_bitrate = 2800
+        info = self._analyze(media_file, video_codec="hevc", video_bitrate=video_bitrate)
+        assert info.video_stream.shall_encode is expected
+
+    def test_less_efficient_video_codec_within_limit_as_h264_equivalent(self, media_file, location_config):
+        location_config.allowed_video_codecs = ["h264", "mpeg2video"]
+        location_config.limit_video_bitrate = 2800
+        info = self._analyze(media_file, video_codec="mpeg2video", video_bitrate=5_000_000)
+        assert info.video_stream.shall_encode is False
+
+    def test_audio_limit_compares_the_aac_equivalent(self, media_file, location_config):
+        location_config.allowed_audio_codecs = ["aac", "opus"]
+        location_config.limit_audio_channel_bitrate = 96
+        info = self._analyze(media_file, audio_codec="opus", audio_bitrate=160_000, audio_channels=2)
+        assert info.audio_streams[0].shall_encode is True
 
 
 class TestEncoderProcess:
@@ -624,7 +643,9 @@ class TestEncoderEncode:
             is_valid=kwargs.get("is_valid", True),
             duration=100,
             video_stream=VideoStream(
-                codec="h264", bitrate=kwargs.get("video_bitrate", 5000), shall_encode=kwargs.get("encode_video", True)
+                codec=kwargs.get("video_codec", "h264"),
+                bitrate=kwargs.get("video_bitrate", 5000),
+                shall_encode=kwargs.get("encode_video", True),
             ),
             audio_tracks=kwargs.get("audio_tracks", [AudioTrack(AudioStream(codec="aac", channels=2), bitrate=128)]),
         )
@@ -687,6 +708,19 @@ class TestEncoderEncode:
         ):
             encoder._encode()
         assert mock_cmd.call_args.args[3] == 800
+
+    @pytest.mark.parametrize("video_bitrate,expected", [(1300, 1950), (5000, 2250), (0, 2250)])
+    def test_video_bitrate_capped_as_h264_equivalent(
+        self, media_file, special_dirs, location_config, video_bitrate, expected
+    ):
+        location_config.target_video_bitrate = 2250
+        encoder = self._encoder(media_file, video_codec="hevc", video_bitrate=video_bitrate)
+        with (
+            patch("baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]),
+            patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
+        ):
+            encoder._encode()
+        assert mock_cmd.call_args.args[3] == expected
 
     def test_passes_the_selected_audio_tracks(self, media_file, special_dirs):
         encoder = self._encoder(media_file)

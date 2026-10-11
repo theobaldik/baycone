@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 
 HDR_TRANSFERS: tuple[str, ...] = ("smpte2084", "arib-std-b67")
 
+# h264 bitrate needed for the same quality, per kbps of the source codec
+H264_EFFICIENCY: dict[str, float] = {"hevc": 1.5, "av1": 2.0, "vp9": 1.5, "mpeg4": 0.7, "mpeg2video": 0.5}
+
 CROP_PATTERN = re.compile(r"crop=\d+:(\d+):\d+:(\d+)")
 
 
@@ -56,6 +59,10 @@ class VideoStream:
     color_transfer: str = ""
     crop_height: int = 0  # 0 keeps the full height
     crop_top: int = 0
+
+    @property
+    def h264_bitrate(self) -> int:
+        return int(self.bitrate * H264_EFFICIENCY.get(self.codec, 1.0))
 
     @property
     def is_hdr(self) -> bool:
@@ -256,7 +263,7 @@ class Analyzer:
         video = file_info.video_stream
         if (
             video.codec not in location_config.allowed_video_codecs
-            or not 0 < video.bitrate <= location_config.limit_video_bitrate
+            or not 0 < video.h264_bitrate <= location_config.limit_video_bitrate
             or video.pix_fmt != ffmpeg.TARGET_PIX_FMT
             or video.width > location_config.limit_video_width
             or video.height > location_config.limit_video_height
@@ -266,7 +273,7 @@ class Analyzer:
         for stream in file_info.audio_streams:
             if stream.codec not in location_config.allowed_audio_codecs:
                 stream.shall_encode = True
-            if not 0 < stream.channel_bitrate <= location_config.limit_audio_channel_bitrate:
+            if not 0 < stream.aac_channel_bitrate <= location_config.limit_audio_channel_bitrate:
                 stream.shall_encode = True
 
         file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, location_config)
@@ -323,7 +330,7 @@ class Encoder:
 
     def _target_video_bitrate(self) -> int:
         return cap_bitrate(
-            self._processing_file.video_stream.bitrate, self._processing_file.location_config.target_video_bitrate
+            self._processing_file.video_stream.h264_bitrate, self._processing_file.location_config.target_video_bitrate
         )
 
     def _video_filters(self) -> dict[str, str]:
