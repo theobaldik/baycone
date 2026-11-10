@@ -1,5 +1,7 @@
 # Baycone
 
+[![GitHub](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/theobaldik/baycone)
+
 **Media pipeline for self-hosted libraries.**
 
 Baycone watches one or more media directories for new video files and automatically transcodes them with `ffmpeg` into a
