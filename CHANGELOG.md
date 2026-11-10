@@ -2,9 +2,29 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Remember failed files across restarts and retry them once the file changes or the configuration is reloaded
+- Reject configuration values of the wrong type when loading, instead of failing later during a run
+- Restart the container automatically and rotate its logs in the Compose setup
+
+### Added
+
+- Resume an interrupted encode with its second pass when the first pass had finished
+- Add `check_free_space`, on by default: pause a location while its disk lacks the space for the next file
+- Stop an ffmpeg that makes no progress for 30 minutes and fail the file
+- Skip a file after the service died three times in a row while processing it
+- Keep an earlier original of the same name in `_baycone_originals/`, archiving the newer one under a numbered name
+
 ### Fixed
 
 - Skip input files whose copy was cut off, instead of encoding the truncated file
+- Move a finished file into `_baycone_processed/` in one step, so a crash or power loss never leaves a broken one there
+- Discard the result when the source file changes or disappears while it is processed
+- Keep the service running when a `config.override.yml` is not a mapping, not UTF-8 or holds a wrongly typed value
+- Fix two-pass hevc encodes of files with a `:` in their name
+- Stop a location nested in another one from processing that location's originals and outputs again
+- Remove work files left behind by a crash when the service starts
 
 ## [0.5.1] - 2026-11-10
 

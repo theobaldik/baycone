@@ -6,6 +6,7 @@ import pytest
 
 from baycone.__main__ import Service
 from baycone.config import Constants, config
+from baycone.encoding import InsufficientSpaceError
 from baycone.watcher import FileChangeTracker
 
 
@@ -38,7 +39,7 @@ class TestProcessNext:
         service._watchers = [watcher]
         service._encoder.process.return_value = True
         assert service._process_next() is True
-        watcher.mark_failed.assert_not_called()
+        watcher.finish.assert_called_once_with(tmp_path / "movie.mp4", False)
 
     def test_failed_file_is_marked_failed(self, service, tmp_path):
         video = tmp_path / "movie.mp4"
@@ -46,7 +47,7 @@ class TestProcessNext:
         service._watchers = [watcher]
         service._encoder.process.return_value = False
         service._process_next()
-        watcher.mark_failed.assert_called_once_with(video)
+        watcher.finish.assert_called_once_with(video, True)
 
     def test_unexpected_error_does_not_stop_the_service(self, service, tmp_path):
         video = tmp_path / "movie.mp4"
@@ -54,7 +55,33 @@ class TestProcessNext:
         service._watchers = [watcher]
         service._encoder.process.side_effect = OSError("disk full")
         service._process_next()
-        watcher.mark_failed.assert_called_once_with(video)
+        watcher.finish.assert_called_once_with(video, True)
+
+    def test_file_waiting_for_free_space_pauses_the_location_without_failing(self, service, tmp_path):
+        video = tmp_path / "movie.mp4"
+        watcher = make_watcher(video)
+        service._watchers = [watcher]
+        service._encoder.process.side_effect = InsufficientSpaceError("needs 10.0 GiB")
+        assert service._process_next() is True
+        watcher.pause.assert_called_once()
+        watcher.finish.assert_called_once_with(video, False)
+
+    def test_other_locations_carry_on_while_one_waits_for_space(self, service, tmp_path):
+        waiting, other = make_watcher(tmp_path / "big.mp4"), make_watcher(tmp_path / "small.mp4")
+        service._watchers = [waiting, other]
+        service._encoder.process.side_effect = [InsufficientSpaceError("needs 10.0 GiB"), True]
+        service._process_next()
+        other.finish.assert_called_once_with(tmp_path / "small.mp4", False)
+
+    def test_stop_signal_ends_the_attempt_without_failing_the_file(self, service, tmp_path):
+        """Only a service that died may leave the attempt open, a clean stop is not the file's fault."""
+        video = tmp_path / "movie.mp4"
+        watcher = make_watcher(video)
+        service._watchers = [watcher]
+        service._encoder.process.side_effect = KeyboardInterrupt
+        with pytest.raises(KeyboardInterrupt):
+            service._process_next()
+        watcher.finish.assert_called_once_with(video, False)
 
 
 class TestMainLoop:
@@ -75,6 +102,37 @@ class TestMainLoop:
         ):
             service.main_loop()
         mock_sleep.assert_called_once()
+
+    def test_survives_an_unexpected_error(self, service, caplog):
+        results = iter([RuntimeError("boom"), False])
+
+        def process_next():
+            result = next(results, None)
+            if result is None:
+                service.stop()
+                return True
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with (
+            patch.object(service, "_reload_config"),
+            patch.object(service, "_process_next", side_effect=process_next) as mock_process,
+            patch("baycone.__main__.time.sleep") as mock_sleep,
+        ):
+            service.main_loop()
+        assert mock_process.call_count == 3
+        # Slept after the error too, a failure that repeats must not spin
+        assert mock_sleep.call_count == 2
+        assert "boom" in caplog.text
+
+    def test_stop_signal_is_not_swallowed(self, service):
+        with (
+            patch.object(service, "_reload_config"),
+            patch.object(service, "_process_next", side_effect=KeyboardInterrupt),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                service.main_loop()
 
     def test_checks_config_on_every_iteration(self, service):
         results = iter([True, False])
@@ -116,6 +174,34 @@ class TestReloadConfig:
         assert [lc.path for lc in config.locations] == ["movies", "shows"]
         assert len(service._watchers) == 2
 
+    def test_reload_retries_failed_files(self, service, config_file, locations_root):
+        """The reload may be the fix, and it is the way to ask for a retry: `touch config.yml`."""
+        video = locations_root / "movies" / "movie.mp4"
+        video.touch()
+        watcher = service._watchers[0]
+        watcher.get_new_file()
+        watcher.finish(watcher.get_new_file(), failed=True)
+
+        bump_mtime(config_file)
+        service._reload_config()
+
+        service._watchers[0].get_new_file()
+        assert service._watchers[0].get_new_file() == video
+
+    @pytest.mark.parametrize(
+        "content",
+        ["- just\n- a list\n", "poll_interval: soon\n", "locations: movies\n", "defaults:\n  allowed_extensions: 5\n"],
+        ids=["list", "wrong type", "locations not a list", "wrong list type"],
+    )
+    def test_wrongly_typed_file_keeps_the_previous_config(self, service, config_file, content):
+        """Such a value would only blow up later, somewhere in the main loop."""
+        watchers = service._watchers
+        config_file.write_text(content)
+        bump_mtime(config_file)
+        service._reload_config()
+        assert [lc.path for lc in config.locations] == ["movies"]
+        assert service._watchers is watchers
+
     def test_invalid_file_keeps_the_previous_config(self, service, config_file):
         watchers = service._watchers
         config_file.write_text("locations: [\n")
@@ -137,7 +223,9 @@ class TestStart:
         monkeypatch.delenv("BAYCONE_CONFIG", raising=False)
         assert service.start() == 1
 
-    @pytest.mark.parametrize("content", [None, "locations: [\n"], ids=["missing", "invalid"])
+    @pytest.mark.parametrize(
+        "content", [None, "locations: [\n", "poll_interval: soon\n"], ids=["missing", "invalid", "wrong type"]
+    )
     def test_fails_on_unreadable_config(self, service, monkeypatch, tmp_path, content):
         config_file = tmp_path / "config.yml"
         if content is not None:

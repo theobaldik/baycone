@@ -1,5 +1,7 @@
 import json
 import subprocess
+import threading
+from collections import namedtuple
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -8,7 +10,10 @@ import pytest
 from baycone import ffmpeg
 from baycone.audio import AudioStream, AudioTrack
 from baycone.config import SpecialDirs
-from baycone.encoding import Analyzer, Encoder, FileInfo, VideoStream
+from baycone.encoding import Analyzer, Encoder, FileInfo, InsufficientSpaceError, VideoStream
+from baycone.files import file_signature
+
+DiskUsage = namedtuple("DiskUsage", "total used free")
 
 
 def make_ffprobe_output(
@@ -99,8 +104,16 @@ class TestFileInfoPaths:
         video.touch()
         assert FileInfo(video).relative_path == Path("ShowName/episode.mkv")
 
-    def test_passlog_path(self, media_file, special_dirs):
-        assert FileInfo(media_file).passlog_path == special_dirs.passlog_dir / "movie.mp4"
+    def test_passlog_path_is_independent_of_the_file_name(self, location_dir, special_dirs):
+        """x265 gets it inside `-x265-params`, where the ':' of a name like this one would cut the value short."""
+        video = location_dir / "Mission: Impossible.mkv"
+        video.touch()
+        assert FileInfo(video).passlog_path == special_dirs.passlog_dir / "passlog"
+
+    def test_optimized_path_uses_target_extension(self, location_dir, special_dirs):
+        video = location_dir / "movie.mkv"
+        video.touch()
+        assert FileInfo(video).optimized_path == special_dirs.optimized_dir / "movie.mp4"
 
     def test_encoding_path_uses_target_extension(self, location_dir, special_dirs):
         video = location_dir / "movie.mkv"
@@ -174,6 +187,10 @@ class TestIsComplete:
 
     def test_truncated_when_probe_fails(self, media_file):
         with patch("baycone.encoding.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffprobe")):
+            assert Analyzer._is_complete(media_file, 0.0, 3600.0) is False
+
+    def test_truncated_when_probe_hangs(self, media_file):
+        with patch("baycone.encoding.subprocess.run", side_effect=subprocess.TimeoutExpired("ffprobe", 1800)):
             assert Analyzer._is_complete(media_file, 0.0, 3600.0) is False
 
     def test_seeks_relative_to_start_time(self, media_file):
@@ -415,6 +432,7 @@ class TestEncoderProcess:
             patch.object(Analyzer, "analyze", return_value=file_info),
             patch.object(encoder, "_encode", **mocks.get("encode", {"return_value": True})) as mock_encode,
             patch.object(encoder, "_optimize", **mocks.get("optimize", {"return_value": True})) as mock_optimize,
+            patch.object(encoder, "_publish", **mocks.get("publish", {})),
             patch.object(encoder, "_archive_original") as mock_archive,
             patch.object(encoder, "_cleanup_workdirs") as mock_cleanup,
             patch.object(Analyzer, "detect_crop", **mocks.get("detect_crop", {})),
@@ -503,6 +521,57 @@ class TestEncoderProcess:
         _, encode, optimize, _, _ = self._process(encoder, info, media_file)
         encode.assert_not_called()
         optimize.assert_called_once_with(False)
+
+    def test_source_changed_meanwhile_is_neither_published_nor_archived(self, media_file, special_dirs):
+        """A copy that was still running would otherwise end up archived as the original."""
+        publish = MagicMock()
+        result, _, _, archive, cleanup = self._process(
+            Encoder(),
+            self._file_info(media_file),
+            media_file,
+            optimize={"side_effect": lambda encoded: bool(media_file.write_text("more data"))},
+            publish={"new": publish},
+        )
+        assert result is False
+        publish.assert_not_called()
+        archive.assert_not_called()
+        cleanup.assert_called_once()
+
+    def test_source_deleted_meanwhile_is_not_published(self, media_file, special_dirs):
+        publish = MagicMock()
+        result, _, _, archive, _ = self._process(
+            Encoder(),
+            self._file_info(media_file),
+            media_file,
+            optimize={"side_effect": lambda encoded: media_file.unlink() or True},
+            publish={"new": publish},
+        )
+        assert result is False
+        publish.assert_not_called()
+        archive.assert_not_called()
+
+    def test_failed_publish_is_never_archived(self, media_file, special_dirs):
+        """The original only moves once its output is safely in the library."""
+        publish = MagicMock(side_effect=OSError("I/O error"))
+        encoder = Encoder()
+        with (
+            patch.object(Analyzer, "analyze", return_value=self._file_info(media_file)),
+            patch.object(encoder, "_optimize", return_value=True),
+            patch.object(encoder, "_publish", new=publish),
+            patch.object(encoder, "_archive_original") as archive,
+            pytest.raises(OSError),
+        ):
+            encoder.process(media_file)
+        archive.assert_not_called()
+
+    def test_waits_for_free_space_before_doing_anything(self, media_file, special_dirs):
+        media_file.write_bytes(b"x" * 1000)
+        detect = MagicMock()
+        with patch("baycone.encoding.shutil.disk_usage", return_value=DiskUsage(10_000, 9_500, 500)):
+            with pytest.raises(InsufficientSpaceError):
+                self._process(Encoder(), self._file_info(media_file), media_file, detect_crop={"new": detect})
+        detect.assert_not_called()
+        assert media_file.is_file()
 
     def test_aborts_without_archiving_when_encode_fails(self, media_file, special_dirs):
         encoder = Encoder()
@@ -596,12 +665,13 @@ class TestSubtitles:
         with (
             patch.object(Analyzer, "analyze", return_value=FileInfo(media_file, is_valid=True, duration=1)),
             patch.object(encoder, "_optimize", return_value=True),
+            patch.object(encoder, "_publish", side_effect=lambda: calls.append("publish")),
             patch.object(encoder, "_extract_subtitles", side_effect=lambda: calls.append("extract")),
             patch.object(encoder, "_archive_original", side_effect=lambda: calls.append("archive")),
             patch.object(encoder, "_cleanup_workdirs"),
         ):
             assert encoder.process(media_file)
-        assert calls == ["extract", "archive"]
+        assert calls == ["publish", "extract", "archive"]
 
 
 class TestVideoEncodeDecision:
@@ -666,6 +736,12 @@ class TestDetectCrop:
 
     def test_no_report_is_no_crop(self, media_file):
         assert self._video(media_file, "").crop_height == 0
+
+    def test_timeout_is_no_crop(self, media_file):
+        video = VideoStream(width=1920, height=1080)
+        with patch("baycone.encoding.subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 1800)):
+            Analyzer.detect_crop(media_file, video)
+        assert video.crop_height == 0
 
     def test_failure_is_no_crop(self, media_file):
         video = self._video(media_file, side_effect=subprocess.CalledProcessError(1, "ffmpeg", stderr="boom"))
@@ -889,6 +965,16 @@ class TestEncoderOptimize:
             encoder._optimize(encoded=False)
         assert "moov atom not found" in caplog.text
 
+    def test_writes_to_the_work_directory_not_the_library(self, media_file, special_dirs):
+        """A crash mid-write must not leave a broken file where the media server looks."""
+        encoder = self._encoder(media_file)
+        with (
+            patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()),
+            patch("baycone.encoding.ffmpeg.get_cmd_optimize", return_value=["ffmpeg"]) as mock_cmd,
+        ):
+            encoder._optimize(encoded=False)
+        assert mock_cmd.call_args.args[1] == special_dirs.optimized_dir / "movie.mp4"
+
     def test_reads_the_original_when_not_encoded(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
         with (
@@ -952,6 +1038,7 @@ class TestLogging:
         progress = make_popen_mock(lines=["out_time_us=25000000\n"])
         with (
             patch("baycone.encoding.subprocess.Popen", return_value=progress),
+            patch.object(encoder, "_kill_when_stalled"),
             patch("baycone.encoding.time.monotonic", side_effect=[0, 0, 60, 60]),
         ):
             encoder._run_ffmpeg(["ffmpeg"], "Encoding 1st pass")
@@ -971,6 +1058,18 @@ class TestArchiveOriginal:
         encoder._archive_original()
         assert not media_file.exists()
         assert (special_dirs.originals_dir / "movie.mp4").is_file()
+
+    def test_never_replaces_an_earlier_original(self, media_file, special_dirs):
+        earlier = special_dirs.originals_dir / "movie.mp4"
+        earlier.write_text("first")
+        (special_dirs.originals_dir / "movie.1.mp4").write_text("second")
+        media_file.write_text("third")
+
+        self._encoder(media_file)._archive_original()
+
+        assert earlier.read_text() == "first"
+        assert (special_dirs.originals_dir / "movie.1.mp4").read_text() == "second"
+        assert (special_dirs.originals_dir / "movie.2.mp4").read_text() == "third"
 
     def test_keeps_subdirectory_structure(self, location_dir, special_dirs):
         video = location_dir / "ShowName" / "Season 1" / "episode.mkv"
@@ -1027,26 +1126,44 @@ class TestArchiveOriginal:
 
 
 class TestCleanupWorkdirs:
-    def test_clears_passlog_and_encoded_files(self, media_file, special_dirs):
-        passlog = special_dirs.passlog_dir / "movie.mp4-0.log"
+    def test_clears_encoded_and_optimized_files(self, media_file, special_dirs):
         encoded = special_dirs.encoded_dir / "movie.mp4"
-        passlog.touch()
+        optimized = special_dirs.optimized_dir / "movie.mp4"
         encoded.touch()
+        optimized.touch()
 
         encoder = Encoder()
         encoder._processing_file = FileInfo(media_file)
         encoder._cleanup_workdirs()
 
-        assert not passlog.exists()
         assert not encoded.exists()
+        assert not optimized.exists()
+
+    def test_keeps_the_first_pass_for_a_resume(self, media_file, special_dirs):
+        passlog = special_dirs.passlog_dir / "passlog-0.log"
+        passlog.touch()
+
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(media_file)
+        encoder._cleanup_workdirs()
+
+        assert passlog.is_file()
+
+    def test_failure_does_not_raise(self, media_file, special_dirs, caplog):
+        """It runs in a `finally`: raising would turn a finished file into a failed one."""
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(media_file)
+        with patch("baycone.config.Path.mkdir", side_effect=OSError("read-only file system")):
+            encoder._cleanup_workdirs()
+        assert "read-only file system" in caplog.text
 
     def test_workdirs_still_exist_afterwards(self, media_file, special_dirs):
         encoder = Encoder()
         encoder._processing_file = FileInfo(media_file)
         encoder._cleanup_workdirs()
 
-        assert special_dirs.passlog_dir.is_dir()
         assert special_dirs.encoded_dir.is_dir()
+        assert special_dirs.optimized_dir.is_dir()
 
     def test_survives_missing_workdirs(self, media_file, special_dirs):
         import shutil as _shutil
@@ -1057,7 +1174,7 @@ class TestCleanupWorkdirs:
         encoder._processing_file = FileInfo(media_file)
         encoder._cleanup_workdirs()
 
-        assert special_dirs.passlog_dir.is_dir()
+        assert special_dirs.encoded_dir.is_dir()
 
     def test_leaves_processed_output_untouched(self, media_file, special_dirs):
         processed = special_dirs.processed_dir / "movie.mp4"
@@ -1068,3 +1185,275 @@ class TestCleanupWorkdirs:
         encoder._cleanup_workdirs()
 
         assert processed.is_file()
+
+
+class TestPublish:
+    def _encoder(self, media_file: Path) -> Encoder:
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(media_file, is_valid=True)
+        encoder._processing_file.optimized_path.write_text("finished")
+        return encoder
+
+    def test_moves_the_finished_file_into_the_library(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        encoder._publish()
+        assert (special_dirs.processed_dir / "movie.mp4").read_text() == "finished"
+        assert not (special_dirs.optimized_dir / "movie.mp4").exists()
+
+    def test_replaces_an_earlier_output(self, media_file, special_dirs):
+        (special_dirs.processed_dir / "movie.mp4").write_text("earlier")
+        self._encoder(media_file)._publish()
+        assert (special_dirs.processed_dir / "movie.mp4").read_text() == "finished"
+
+    def test_creates_the_subdirectory(self, location_dir, special_dirs):
+        video = location_dir / "Show" / "episode.mp4"
+        video.parent.mkdir()
+        video.touch()
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(video, is_valid=True)
+        encoder._processing_file.optimized_path.parent.mkdir()
+        encoder._processing_file.optimized_path.write_text("finished")
+
+        encoder._publish()
+
+        assert (special_dirs.processed_dir / "Show" / "episode.mp4").is_file()
+
+    def test_syncs_the_file_before_the_rename_and_the_directory_after(self, media_file, special_dirs):
+        """After a power loss the output must not be empty while the original is already archived."""
+        encoder = self._encoder(media_file)
+        synced = []
+        with (
+            patch("baycone.encoding.fsync", side_effect=lambda path: synced.append((path, path.exists()))),
+            patch("baycone.encoding.fsync_dir", side_effect=lambda path: synced.append((path, True))),
+        ):
+            encoder._publish()
+        assert synced == [(special_dirs.optimized_dir / "movie.mp4", True), (special_dirs.processed_dir, True)]
+
+    def test_failed_sync_leaves_the_library_untouched(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        with patch("baycone.encoding.fsync", side_effect=OSError("I/O error")):
+            with pytest.raises(OSError):
+                encoder._publish()
+        assert not (special_dirs.processed_dir / "movie.mp4").exists()
+
+
+class TestFreeSpace:
+    def _encoder(self, media_file: Path, size: int = 1000, **kwargs) -> Encoder:
+        media_file.write_bytes(b"x" * size)
+        encoder = Encoder()
+        encoder._signature = file_signature(media_file)
+        encoder._processing_file = FileInfo(
+            media_file,
+            is_valid=True,
+            duration=kwargs.get("duration", 100),
+            video_stream=VideoStream(codec="h264", bitrate=5000, shall_encode=kwargs.get("encode_video", False)),
+            audio_tracks=[
+                AudioTrack(AudioStream(codec="ac3", channels=6), bitrate=384),
+                AudioTrack(AudioStream(codec="aac", channels=2, channel_bitrate=64)),
+            ],
+        )
+        return encoder
+
+    def _check(self, encoder: Encoder, free: int, shall_encode: bool = False, total: int = 10**12) -> None:
+        with patch("baycone.encoding.shutil.disk_usage", return_value=DiskUsage(total, total - free, free)):
+            encoder._check_free_space(shall_encode)
+
+    def test_remux_needs_the_source_size(self, media_file, special_dirs):
+        assert self._encoder(media_file)._required_space(shall_encode=False) == 1000
+
+    def test_audio_only_encode_needs_the_source_size_twice(self, media_file, special_dirs):
+        assert self._encoder(media_file)._required_space(shall_encode=True) == 2000
+
+    def test_video_encode_needs_the_target_bitrate_twice(self, media_file, special_dirs, location_config):
+        location_config.target_video_bitrate = 2250
+        encoder = self._encoder(media_file, encode_video=True)
+        # (2250 video + 384 encoded audio + 2 x 64 copied audio) kbps for 100 s, encoded and optimized
+        assert encoder._required_space(shall_encode=True) == (2250 + 384 + 128) * 125 * 100 * 2
+
+    def test_unknown_duration_falls_back_to_the_source_size(self, media_file, special_dirs):
+        encoder = self._encoder(media_file, encode_video=True, duration=0)
+        assert encoder._required_space(shall_encode=True) == 2000
+
+    def test_enough_space_passes(self, media_file, special_dirs):
+        self._check(self._encoder(media_file), free=1000)
+
+    def test_too_little_space_raises(self, media_file, special_dirs):
+        with pytest.raises(InsufficientSpaceError, match="movie.mp4"):
+            self._check(self._encoder(media_file), free=999)
+
+    def test_filesystem_without_space_report_is_not_checked(self, media_file, special_dirs):
+        """Some network filesystems report an empty disk rather than their real numbers."""
+        self._check(self._encoder(media_file), free=0, total=0)
+
+    def test_failing_space_report_is_not_checked(self, media_file, special_dirs):
+        with patch("baycone.encoding.shutil.disk_usage", side_effect=OSError("not supported")):
+            self._encoder(media_file)._check_free_space(False)
+
+    def test_check_can_be_turned_off_per_location(self, media_file, special_dirs, location_config):
+        location_config.check_free_space = False
+        self._check(self._encoder(media_file), free=0)
+
+
+class TestStallWatchdog:
+    @pytest.fixture(autouse=True)
+    def short_timeouts(self, monkeypatch):
+        monkeypatch.setattr("baycone.encoding.STALL_CHECK_SECONDS", 0.01)
+        monkeypatch.setattr("baycone.encoding.STALL_SECONDS", 0.05)
+
+    def _encoder(self, media_file: Path) -> Encoder:
+        encoder = Encoder()
+        encoder._processing_file = FileInfo(media_file, is_valid=True, duration=100)
+        return encoder
+
+    def _hanging_process(self) -> MagicMock:
+        """Its output only ends once it is killed."""
+        killed = threading.Event()
+
+        def stdout():
+            killed.wait(5)
+            return
+            yield
+
+        process = MagicMock(returncode=-9)
+        process.stdout = stdout()
+        process.kill.side_effect = killed.set
+        return process
+
+    def test_kills_ffmpeg_that_makes_no_progress(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        process = self._hanging_process()
+        with patch("baycone.encoding.subprocess.Popen", return_value=process):
+            with pytest.raises(subprocess.CalledProcessError) as error:
+                encoder._run_ffmpeg(["ffmpeg"], "Encoding 1st pass")
+        process.kill.assert_called_once()
+        assert "No progress" in error.value.stderr
+
+    def test_stalled_encode_fails_the_file(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        with patch("baycone.encoding.subprocess.Popen", return_value=self._hanging_process()):
+            assert encoder._optimize(encoded=False) is False
+
+    def test_advancing_progress_keeps_ffmpeg_alive(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        process, done = MagicMock(), threading.Event()
+        watchdog = threading.Thread(target=encoder._kill_when_stalled, args=(process, None, done))
+        watchdog.start()
+        for out_time in range(1, 30):
+            encoder._out_time = out_time
+            done.wait(0.01)
+        done.set()
+        watchdog.join()
+        process.kill.assert_not_called()
+
+    def test_growing_output_keeps_ffmpeg_alive(self, media_file, special_dirs):
+        """Moving the index to the front rewrites the file without reporting any progress."""
+        encoder = self._encoder(media_file)
+        output = special_dirs.optimized_dir / "movie.mp4"
+        process, done = MagicMock(), threading.Event()
+        watchdog = threading.Thread(target=encoder._kill_when_stalled, args=(process, output, done))
+        watchdog.start()
+        for size in range(1, 30):
+            output.write_bytes(b"x" * size)
+            done.wait(0.01)
+        done.set()
+        watchdog.join()
+        process.kill.assert_not_called()
+
+    def test_finished_ffmpeg_is_not_reported_as_stalled(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        with patch("baycone.encoding.subprocess.Popen", return_value=make_popen_mock()):
+            encoder._run_ffmpeg(["ffmpeg"], "Optimizing")
+        assert encoder._stalled is False
+
+
+class TestFirstPassResume:
+    def _encoder(self, media_file: Path) -> Encoder:
+        encoder = Encoder()
+        encoder._signature = file_signature(media_file)
+        encoder._processing_file = FileInfo(
+            media_file,
+            is_valid=True,
+            duration=100,
+            video_stream=VideoStream(codec="h264", bitrate=5000, shall_encode=True),
+            audio_tracks=[AudioTrack(AudioStream(codec="aac", channels=2), bitrate=128)],
+        )
+        return encoder
+
+    def _encode(self, encoder: Encoder, *processes: MagicMock) -> tuple[bool, list[str]]:
+        """The result and which passes ran."""
+        with patch("baycone.encoding.subprocess.Popen", side_effect=list(processes)) as mock_popen:
+            result = encoder._encode()
+        return result, [
+            "2nd" if "2" in call.args[0][call.args[0].index("-pass") + 1] else "1st"
+            for call in mock_popen.call_args_list
+        ]
+
+    def _interrupted_second_pass(self, media_file: Path) -> None:
+        process = make_popen_mock()
+        process.stdout = MagicMock(__iter__=MagicMock(side_effect=KeyboardInterrupt))
+        with pytest.raises(KeyboardInterrupt):
+            self._encode(self._encoder(media_file), make_popen_mock(), process)
+
+    def test_first_pass_is_marked_done(self, media_file, special_dirs):
+        self._interrupted_second_pass(media_file)
+        assert (special_dirs.passlog_dir / "pass1.json").is_file()
+
+    def test_resumes_with_the_second_pass(self, media_file, special_dirs):
+        self._interrupted_second_pass(media_file)
+        assert self._encode(self._encoder(media_file), make_popen_mock()) == (True, ["2nd"])
+
+    def test_first_pass_that_did_not_finish_is_repeated(self, media_file, special_dirs):
+        self._encode(self._encoder(media_file), make_popen_mock(returncode=1))
+        assert self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock()) == (True, ["1st", "2nd"])
+
+    def test_changed_source_repeats_the_first_pass(self, media_file, special_dirs):
+        self._interrupted_second_pass(media_file)
+        media_file.write_text("another movie")
+        assert self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock()) == (True, ["1st", "2nd"])
+
+    def test_changed_settings_repeat_the_first_pass(self, media_file, special_dirs, location_config):
+        self._interrupted_second_pass(media_file)
+        location_config.target_video_bitrate = 1500
+        assert self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock()) == (True, ["1st", "2nd"])
+
+    def test_stale_first_pass_of_another_file_is_cleared(self, media_file, special_dirs):
+        self._interrupted_second_pass(media_file)
+        stats = special_dirs.passlog_dir / "passlog-0.log"
+        stats.touch()
+        media_file.write_text("another movie")
+        self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock())
+        assert not stats.exists()
+
+    def test_starts_over_when_the_kept_first_pass_does_not_fit(self, media_file, special_dirs):
+        """E.g. after an FFmpeg upgrade; without the fallback the file would fail for good."""
+        self._interrupted_second_pass(media_file)
+        result = self._encode(
+            self._encoder(media_file), make_popen_mock(returncode=1), make_popen_mock(), make_popen_mock()
+        )
+        assert result == (True, ["2nd", "1st", "2nd"])
+
+    def test_fresh_second_pass_failure_is_not_repeated(self, media_file, special_dirs):
+        result = self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock(returncode=1))
+        assert result == (False, ["1st", "2nd"])
+
+    def test_passlog_is_cleared_once_the_encode_is_done(self, media_file, special_dirs):
+        self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock())
+        assert list(special_dirs.passlog_dir.iterdir()) == []
+
+    def test_stats_are_synced_before_the_marker_is_written(self, media_file, special_dirs):
+        synced = []
+
+        def first_pass(cmd, **kwargs):
+            if not synced and not (special_dirs.passlog_dir / "passlog-0.log").exists():
+                (special_dirs.passlog_dir / "passlog-0.log").touch()
+            return make_popen_mock()
+
+        def record(path):
+            synced.append((path.name, (special_dirs.passlog_dir / "pass1.json").exists()))
+
+        with (
+            patch("baycone.encoding.subprocess.Popen", side_effect=first_pass),
+            patch("baycone.encoding.fsync", side_effect=record),
+        ):
+            self._encoder(media_file)._encode()
+        assert synced == [("passlog-0.log", False)]

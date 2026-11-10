@@ -8,7 +8,7 @@ from types import FrameType
 import yaml
 
 from baycone import config
-from baycone.encoding import Encoder
+from baycone.encoding import Encoder, InsufficientSpaceError
 from baycone.logger import setup_logging
 from baycone.watcher import DirWatcher, FileChangeTracker
 
@@ -36,6 +36,9 @@ class Service:
             log.error(f"Configuration '{self._config_file.file_path}' not reloaded, keeping the previous one: {e}")
             return
         log.info(f"Configuration '{self._config_file.file_path}' reloaded")
+        # The reload may be the fix for whatever made them fail
+        for watcher in self._watchers:
+            watcher.retry_failed()
 
     def _process_next(self) -> bool:
         """Returns `True` if a file was picked up."""
@@ -43,19 +46,30 @@ class Service:
         for watcher in self._watchers:
             if file := watcher.get_new_file():
                 processed = True
+                failed = False
                 try:
-                    succeeded = self._encoder.process(file)
+                    failed = not self._encoder.process(file)
+                except InsufficientSpaceError as e:
+                    # Not the file's fault: it is left alone and tried again later
+                    log.warning(f"Not enough free space: {e}")
+                    watcher.pause()
                 except Exception:
                     log.exception(f"Processing failed for '{file}'")
-                    succeeded = False
-                if not succeeded:
-                    watcher.mark_failed(file)
+                    failed = True
+                finally:
+                    # Reached on a stop signal too, so only a service that died leaves the attempt open
+                    watcher.finish(file, failed)
         return processed
 
     def main_loop(self) -> None:
         while not self._stop_signal:
-            self._reload_config()
-            if not self._process_next():
+            try:
+                self._reload_config()
+                idle = not self._process_next()
+            except Exception:
+                log.exception("Unexpected error, carrying on")
+                idle = True
+            if idle:
                 time.sleep(config.config.poll_interval)
 
     def start(self) -> int:
@@ -70,7 +84,7 @@ class Service:
         self._config_file.changed()
         try:
             self._load_config()
-        except (OSError, yaml.YAMLError) as e:
+        except (OSError, ValueError, yaml.YAMLError) as e:
             log.error(f"Configuration '{config.Constants.FILE_CONFIG}' could not be loaded: {e}")
             return 1
         log.info("Service started")

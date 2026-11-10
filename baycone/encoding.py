@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import tempfile
+import threading
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from baycone.audio import (
     select_audio_tracks,
 )
 from baycone.config import config, LocationConfig, SpecialDirs
+from baycone.files import Signature, file_signature, fsync, fsync_dir, write_atomic
 from baycone.subtitles import SRT_CODECS, SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
 
 log = logging.getLogger(__name__)
@@ -34,9 +36,21 @@ CROP_PATTERN = re.compile(r"crop=\d+:(\d+):\d+:(\d+)")
 # The seek may land a whole GOP before its target, so data is expected within twice this of the declared end
 TAIL_SECONDS: float = 30.0
 
+# ffmpeg is killed once neither its progress nor its output file has moved for this long
+STALL_SECONDS: float = 1800.0
+STALL_CHECK_SECONDS: float = 30.0
+
+
+class InsufficientSpaceError(Exception):
+    """Raised before anything is written, so the file can simply be tried again later."""
+
 
 def _format_duration(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
+
+
+def _format_size(size: float) -> str:
+    return f"{size / 2**30:.1f} GiB"
 
 
 def _format_bitrate(kbps: int) -> str:
@@ -128,11 +142,21 @@ class FileInfo:
 
     @property
     def passlog_path(self) -> Path:
-        return self._special_dirs.passlog_dir / self.relative_path
+        """A fixed name: x265 takes it inside `-x265-params`, where a ':' from a file name would end the value."""
+        return self._special_dirs.passlog_dir / "passlog"
+
+    @property
+    def first_pass_path(self) -> Path:
+        """Marks the passlog as complete and tells which file and settings it belongs to."""
+        return self._special_dirs.passlog_dir / "pass1.json"
 
     @property
     def encoding_path(self) -> Path:
         return self._special_dirs.encoded_dir / self.relative_path.with_suffix(self._location_config.target_extension)
+
+    @property
+    def optimized_path(self) -> Path:
+        return self._special_dirs.optimized_dir / self.relative_path.with_suffix(self._location_config.target_extension)
 
     @property
     def original_path(self) -> Path:
@@ -154,7 +178,9 @@ class Analyzer:
             return None
         try:
             cmd = ffmpeg.get_cmd_ffprobe(file_path)
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+            result = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=30
+            )
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             log.error(f"FFprobe command failed for {file_path}: {e.stderr}")
@@ -175,9 +201,11 @@ class Analyzer:
         end = start_time + duration
         try:
             cmd = ffmpeg.get_cmd_ffprobe_tail(file_path, max(end - TAIL_SECONDS, start_time))
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=STALL_SECONDS
+            )
             packets = json.loads(result.stdout).get("packets", [])
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
             log.error(f"Checking the end of '{file_path}' failed: {e}")
             return False
 
@@ -267,9 +295,19 @@ class Analyzer:
         """Top and bottom bars only, the full width is always kept."""
         log.info("Detecting black bars...")
         try:
-            result = subprocess.run(ffmpeg.get_cmd_cropdetect(file_path), capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ffmpeg.get_cmd_cropdetect(file_path),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=STALL_SECONDS,
+            )
         except subprocess.CalledProcessError as e:
             log.warning(f"Black bar detection failed, keeping the full frame: {e.stderr.strip()[-500:]}")
+            return
+        except subprocess.TimeoutExpired:
+            log.warning("Black bar detection took too long, keeping the full frame")
             return
 
         matches = CROP_PATTERN.findall(result.stderr)
@@ -316,8 +354,15 @@ class Encoder:
 
     def __init__(self):
         self._processing_file: FileInfo | None = None
+        self._signature: Signature | None = None
+
+        # Shared with the stall watchdog thread
+        self._out_time: int = 0
+        self._stalled: bool = False
 
     def process(self, file_path: Path) -> bool:
+        """Raises `InsufficientSpaceError` when the file has to wait for free space."""
+        self._signature = file_signature(file_path)
         self._processing_file = Analyzer.analyze(file_path)
 
         try:
@@ -333,6 +378,12 @@ class Encoder:
                 )
                 return False
 
+            # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
+            shall_encode = self._processing_file.video_stream.shall_encode or any(
+                t.stream.shall_encode for t in self._processing_file.audio_tracks
+            )
+            self._check_free_space(shall_encode)
+
             log.info(
                 f"Processing '{self._processing_file.relative_path}'"
                 f" ({_format_duration(self._processing_file.duration)})"
@@ -342,10 +393,6 @@ class Encoder:
                 Analyzer.detect_crop(file_path, self._processing_file.video_stream)
             self._log_plan()
 
-            # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
-            shall_encode = self._processing_file.video_stream.shall_encode or any(
-                t.stream.shall_encode for t in self._processing_file.audio_tracks
-            )
             if not shall_encode and self._processing_file.shall_remux:
                 log.info(f"Only the container differs, remuxing '{file_path}'")
 
@@ -358,13 +405,51 @@ class Encoder:
                 log.error(f"Processing aborted: Optimizing failed for '{file_path}'")
                 return False
 
-            self._extract_subtitles()
+            # A copy that was still running, or a file replaced or deleted meanwhile
+            if file_signature(file_path) != self._signature:
+                log.warning(f"Processing aborted: '{file_path}' changed while it was processed")
+                return False
 
+            self._publish()
+            self._extract_subtitles()
             self._archive_original()
             return True
         finally:
             self._cleanup_workdirs()
             self._processing_file = None
+
+    def _required_space(self, shall_encode: bool) -> int:
+        """In bytes. The encoded and the optimized file exist side by side, hence twice the output when encoding."""
+        file_info = self._processing_file
+        size = self._signature[0] if self._signature else 0
+
+        # Two-pass encoding hits its bitrate, anything copied is as large as it is in the source
+        if file_info.video_stream.shall_encode and file_info.duration:
+            audio = sum(t.bitrate or t.stream.channel_bitrate * t.stream.channels for t in file_info.audio_tracks)
+            size = (self._target_video_bitrate() + audio) * 125 * file_info.duration
+
+        return size * 2 if shall_encode else size
+
+    def _check_free_space(self, shall_encode: bool) -> None:
+        file_info = self._processing_file
+        if not file_info.location_config.check_free_space:
+            return
+
+        root_dir = file_info.special_dirs.root_dir
+        try:
+            usage = shutil.disk_usage(root_dir)
+        except OSError:
+            return
+        # Filesystems that cannot tell their free space report an empty disk
+        if usage.total == 0:
+            return
+
+        required = self._required_space(shall_encode)
+        if usage.free < required:
+            raise InsufficientSpaceError(
+                f"'{file_info.file_path}' needs {_format_size(required)},"
+                f" '{root_dir}' has {_format_size(usage.free)} free"
+            )
 
     def _target_video_bitrate(self) -> int:
         """`target_video_bitrate` is in kbps of the target codec, so the source is capped in its terms too."""
@@ -432,6 +517,9 @@ class Encoder:
         for line in process.stdout:
             key, _, value = line.strip().partition("=")
 
+            if key == "out_time_us" and value.isdigit():
+                self._out_time = int(value)
+
             if duration and key == "out_time_us" and value.isdigit():
                 out_percent = int(value) / 10_000 / duration
                 if out_percent >= percent + 10:
@@ -439,11 +527,27 @@ class Encoder:
                     eta = (time.monotonic() - started) * max(100 - out_percent, 0) / out_percent
                     log.info(f"'{name}' {step}: {percent} %, ETA {_format_duration(eta)}")
 
-    def _run_ffmpeg(self, cmd: list[str], step: str) -> None:
+    def _kill_when_stalled(self, process: subprocess.Popen, output_file: Path | None, done: threading.Event) -> None:
+        """The output file counts too: moving the index to the front (faststart) rewrites it without any progress."""
+        seen, since = None, time.monotonic()
+        while not done.wait(STALL_CHECK_SECONDS):
+            current = (self._out_time, file_signature(output_file) if output_file else None)
+            if current != seen:
+                seen, since = current, time.monotonic()
+            elif time.monotonic() - since >= STALL_SECONDS:
+                self._stalled = True
+                process.kill()
+                return
+
+    def _run_ffmpeg(self, cmd: list[str], step: str, output_file: Path | None = None) -> None:
         started = time.monotonic()
+        self._out_time, self._stalled = 0, False
+        done = threading.Event()
+
         # A file rather than a pipe, which would block FFmpeg once full while only stdout is drained
         with tempfile.TemporaryFile(mode="w+") as stderr:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr, text=True)
+            process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr, text=True)
+            threading.Thread(target=self._kill_when_stalled, args=(process, output_file, done), daemon=True).start()
             try:
                 self._log_progress(process, step)
                 process.wait()
@@ -451,6 +555,11 @@ class Encoder:
                 process.kill()
                 process.wait()
                 raise
+            finally:
+                done.set()
+            if self._stalled:
+                message = f"No progress for {_format_duration(STALL_SECONDS)}, FFmpeg was killed"
+                raise subprocess.CalledProcessError(process.returncode, cmd, stderr=message)
             if process.returncode != 0:
                 stderr.seek(0)
                 raise subprocess.CalledProcessError(process.returncode, cmd, stderr=stderr.read().strip())
@@ -472,13 +581,10 @@ class Encoder:
 
         try:
             if file_info.video_stream.shall_encode:
-                file_info.passlog_path.parent.mkdir(parents=True, exist_ok=True)
-                cmd = ffmpeg.get_cmd_encode_movie_pass_1(
+                pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(
                     file_info.file_path, file_info.passlog_path, codec, video_bitrate, video_filters
                 )
-                self._run_ffmpeg(cmd, "Encoding 1st pass")
-
-                cmd = ffmpeg.get_cmd_encode_movie_pass_2(
+                pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(
                     file_info.file_path,
                     file_info.encoding_path,
                     file_info.passlog_path,
@@ -487,10 +593,30 @@ class Encoder:
                     video_filters,
                     file_info.audio_tracks,
                 )
-                self._run_ffmpeg(cmd, "Encoding 2nd pass")
+
+                resumed = self._is_first_pass_done(pass_1)
+                if resumed:
+                    log.info(f"First pass of '{file_info.relative_path}' was finished earlier, resuming")
+                else:
+                    self._first_pass(pass_1)
+
+                try:
+                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", file_info.encoding_path)
+                except subprocess.CalledProcessError as e:
+                    if not resumed:
+                        raise
+                    # The kept first pass may not fit any more, e.g. after an FFmpeg upgrade
+                    log.warning(
+                        f"2nd pass failed on the first pass kept from an earlier run, starting over: {e.stderr}"
+                    )
+                    file_info.encoding_path.unlink(missing_ok=True)
+                    self._first_pass(pass_1)
+                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", file_info.encoding_path)
+
+                file_info.special_dirs.clear_passlog()
             else:
                 cmd = ffmpeg.get_cmd_encode_audio(file_info.file_path, file_info.encoding_path, file_info.audio_tracks)
-                self._run_ffmpeg(cmd, "Encoding audio")
+                self._run_ffmpeg(cmd, "Encoding audio", file_info.encoding_path)
 
             log.info(f"Encoded file saved to '{file_info.encoding_path}'")
             return True
@@ -500,18 +626,40 @@ class Encoder:
 
         return False
 
+    def _first_pass_key(self, cmd: list[str]) -> dict:
+        """The command covers every setting the second pass has to share with the first."""
+        return {"signature": list(self._signature or ()), "cmd": cmd}
+
+    def _is_first_pass_done(self, cmd: list[str]) -> bool:
+        try:
+            return json.loads(
+                self._processing_file.first_pass_path.read_text(encoding="utf-8")
+            ) == self._first_pass_key(cmd)
+        except OSError, ValueError:
+            return False
+
+    def _first_pass(self, cmd: list[str]) -> None:
+        file_info = self._processing_file
+        file_info.special_dirs.clear_passlog()
+        self._run_ffmpeg(cmd, "Encoding 1st pass")
+
+        # Synced before they are declared complete, a power loss must not leave the marker with half the stats
+        for stats_file in file_info.special_dirs.passlog_dir.iterdir():
+            fsync(stats_file)
+        write_atomic(file_info.first_pass_path, json.dumps(self._first_pass_key(cmd)))
+
     def _optimize(self, encoded: bool) -> bool:
-        self._processing_file.processed_path.parent.mkdir(parents=True, exist_ok=True)
+        """Into a work directory: the library only ever gets the finished file, see `_publish`."""
+        self._processing_file.optimized_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = ffmpeg.get_cmd_optimize(
             self._processing_file.encoding_path if encoded else self._processing_file.file_path,
-            self._processing_file.processed_path,
+            self._processing_file.optimized_path,
             self._processing_file.audio_tracks,
             encoded,
         )
 
         try:
-            self._run_ffmpeg(cmd, "Optimizing")
-            log.info(f"Optimized file saved to '{self._processing_file.processed_path}'")
+            self._run_ffmpeg(cmd, "Optimizing", self._processing_file.optimized_path)
             return True
         except subprocess.CalledProcessError as e:
             log.error(
@@ -533,18 +681,32 @@ class Encoder:
                 cmd = ffmpeg.get_cmd_extract_subtitle(
                     file_info.file_path, path, stream.index, stream.codec in SRT_CODECS
                 )
-                self._run_ffmpeg(cmd, "Subtitles")
+                self._run_ffmpeg(cmd, "Subtitles", path)
                 ensure_utf8(path)
                 log.info(f"Subtitles saved to '{path}'")
             except Exception as e:
                 log.warning(f"Extracting {stream.lang} subtitles of '{file_info.file_path}' failed: {e}")
                 path.unlink(missing_ok=True)
 
-    # TODO: Move to another module
+    def _publish(self) -> None:
+        """Synced before the rename, so the original is only ever archived for an output that is safely on disk."""
+        source_path = self._processing_file.optimized_path
+        target_path = self._processing_file.processed_path
+
+        fsync(source_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.replace(target_path)
+        fsync_dir(target_path.parent)
+        log.info(f"Processed file saved to '{target_path}'")
+
     @staticmethod
-    def _clear_dir(directory: Path) -> None:
-        shutil.rmtree(directory, ignore_errors=True)
-        directory.mkdir(parents=True, exist_ok=True)
+    def _free_path(path: Path) -> Path:
+        """`path`, or `<stem>.<n><suffix>` when it is taken."""
+        candidate, number = path, 0
+        while candidate.exists():
+            number += 1
+            candidate = path.with_stem(f"{path.stem}.{number}")
+        return candidate
 
     @staticmethod
     def _remove_empty_dirs(directory: Path, root_dir: Path) -> None:
@@ -560,14 +722,20 @@ class Encoder:
 
     def _archive_original(self) -> None:
         source_path = self._processing_file.file_path
-        target_path = self._processing_file.original_path
+        # An earlier original of the same name is kept, a rename would silently replace it
+        target_path = self._free_path(self._processing_file.original_path)
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.rename(target_path)
+        fsync_dir(target_path.parent)
+        fsync_dir(source_path.parent)
         log.info(f"File '{source_path}' moved to '{target_path}'")
 
         self._remove_empty_dirs(source_path.parent, self._processing_file.special_dirs.root_dir)
 
     def _cleanup_workdirs(self) -> None:
-        self._clear_dir(self._processing_file.special_dirs.passlog_dir)
-        self._clear_dir(self._processing_file.special_dirs.encoded_dir)
+        """Must not raise: it runs in a `finally` and would turn a finished file into a failed one."""
+        try:
+            self._processing_file.special_dirs.clear_workdirs()
+        except OSError as e:
+            log.warning(f"Work directories could not be cleaned up: {e}")

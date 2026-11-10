@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (304 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (437 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -62,9 +62,18 @@ Two tests guard against past data-loss/logic bugs — keep them:
   must get the same video filters. Everything codec-specific (encoder, pixel formats, per-pass args) lives in one
   `VideoCodec` entry of `VIDEO_CODECS`, keyed by `target_video_codec`; x265 needs the same GOP and rate-control
   params in both passes, and `-x265-params` values are `key=value` with no `:` inside a value
+- `baycone/files.py` — `file_signature()` (size + mtime, the one notion of "this file changed"), `fsync()` /
+  `fsync_dir()` and `write_atomic()`. Anything that must survive a power loss goes through these
+- `baycone/state.py` — `State`, a location's `.baycone/state.json`: failed files and the file in progress with its
+  attempt count. Written atomically; an unreadable file starts empty, a failed save only warns
 - `baycone/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into them (they
   grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
-  scan — never sleep per file. Failed files are skipped until they change (`mark_failed`).
+  scan — never sleep per file. The special directory *names* are pruned at any depth, so nested locations do not
+  process each other's outputs. `get_new_file()` opens an attempt and `finish(file, failed)` closes it — always pair
+  them (`Service._process_next` does so in a `finally`, which a stop signal reaches too). An attempt left open means
+  the service died; after `MAX_ATTEMPTS` of those the file counts as failed. Failed files are persisted and skipped
+  until they change or `retry_failed()` is called (config or override reload). `pause()` holds a location back for
+  `PAUSE_SECONDS` without failing anything.
 - `baycone/cli.py` — Standalone CLI entry point (separate from service mode), uses `argparse`. Imports
   `from baycone import ffmpeg` — there is no third-party `ffmpeg` dependency.
 
@@ -73,7 +82,28 @@ optimizing succeeded. On any failure it stays put, `process()` returns `False` a
 changes — a failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it
 is within limits, and a container mismatch alone is fixed by the optimize remux. Black-bar detection
 (`Analyzer.detect_crop`) decodes keyframes of the whole file, so it only runs when the video is re-encoded anyway.
-`_cleanup_workdirs()` always runs (`finally`).
+`_cleanup_workdirs()` always runs (`finally`) and must not raise.
+
+**Crash safety.** `_optimize()` writes into `.baycone/optimized/`; `_publish()` fsyncs that file, renames it into
+`_baycone_processed/` and fsyncs the directory — the library never holds a half-written file, and the original is
+archived only for an output that is durably on disk. Keep the order encode → optimize → source unchanged? →
+publish → subtitles → archive. The source's signature is taken before the analysis and compared before publishing; a
+changed or deleted source discards the result. `_archive_original()` never overwrites (`_free_path`). Everything
+under `.baycone/` except `state.json` and `config.override.yml` is disposable: `SpecialDirs.clear_workdirs()` runs
+after every file and when a `DirWatcher` is created (startup, config reload — never during an encode).
+
+**First-pass resume.** The passlog is *not* part of `clear_workdirs()`. `_first_pass()` fsyncs the stats and then
+writes `passlogfiles/pass1.json` (source signature + the exact first-pass command); `_encode()` skips the first pass
+when that matches and clears the passlog only before a fresh first pass and after a successful second one. A second
+pass that fails on a kept first pass starts over once. The passlog file name is fixed (`passlog`), never derived
+from the media file name.
+
+**Things that wait instead of failing.** `Encoder.process()` raises `InsufficientSpaceError` before writing anything
+(`check_free_space`, skipped when the filesystem reports no total); the service pauses the location. Every ffmpeg
+run is watched by `_kill_when_stalled()`: alive means `out_time_us` or the output file's signature moved within
+`STALL_SECONDS` — the output file matters because faststart rewrites it while ffmpeg reports nothing.
+`Service.main_loop` catches every `Exception` per iteration; a config value of the wrong type is rejected at load
+(`_validate` in `config.py`) rather than left to blow up mid-run.
 
 **Directory pruning** (`_remove_empty_dirs`) walks up with `rmdir()`, which only ever succeeds on empty directories.
 Never `rmtree` anything under the watch root — sibling media files may not be processed yet.

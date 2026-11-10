@@ -24,6 +24,13 @@ services:
   baycone:
     image: theobaldik/baycone:0.5.1
     user: "1000:1000"
+    # Comes back after a crash or a reboot; interrupted files are picked up again
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # ffmpeg parses untrusted media: no network, no privilege escalation, and
     # nothing writable beyond the mounts and the temp dir
     network_mode: none

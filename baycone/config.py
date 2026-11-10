@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from copy import deepcopy
 from typing import Iterator
 from pathlib import Path
@@ -10,12 +11,31 @@ import yaml
 log = logging.getLogger(__name__)
 
 
+def _validate(key: str, value: object, default: object) -> None:
+    """A value has to be of its default's kind; a wrong one would only blow up later, mid-run."""
+    if isinstance(default, bool):
+        valid = isinstance(value, bool)
+    elif isinstance(default, (int, float)):
+        valid = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    elif isinstance(default, list):
+        valid = isinstance(value, list) and all(isinstance(item, str) for item in value)
+    else:
+        valid = isinstance(value, type(default))
+
+    if not valid:
+        raise ValueError(f"Invalid value {value!r} for configuration key '{key}'")
+
+
 class Serializable:
 
     def from_dict(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected a mapping of configuration keys, got {data!r}")
+
         names = {f.name for f in fields(self)}
         for key, value in data.items():
             if key in names:
+                _validate(key, value, getattr(self, key))
                 setattr(self, key, deepcopy(value))
             else:
                 log.warning(f"Unknown configuration key '{key}' ignored")
@@ -28,11 +48,13 @@ class Constants:
     DIR_TEMP = Path(".baycone")
     DIR_PASSLOG = DIR_TEMP / "passlogfiles"
     DIR_ENCODED = DIR_TEMP / "encoded"
+    DIR_OPTIMIZED = DIR_TEMP / "optimized"
     DIR_ORIGINALS = Path("_baycone_originals")
     DIR_PROCESSED = Path("_baycone_processed")
 
-    SPECIAL_DIRS = (DIR_TEMP, DIR_PASSLOG, DIR_ENCODED, DIR_ORIGINALS, DIR_PROCESSED)
+    SPECIAL_DIRS = (DIR_TEMP, DIR_PASSLOG, DIR_ENCODED, DIR_OPTIMIZED, DIR_ORIGINALS, DIR_PROCESSED)
     FILE_CONFIG_OVERRIDE = DIR_TEMP / "config.override.yml"
+    FILE_STATE = DIR_TEMP / "state.json"
 
     DIR_LOCATIONS = os.environ.get("BAYCONE_LOCATIONS")
     FILE_CONFIG = os.environ.get("BAYCONE_CONFIG")
@@ -47,7 +69,16 @@ class SpecialDirs:
         self._root_dir: Path = root_dir if root_dir.is_absolute() else Path(Constants.DIR_LOCATIONS) / root_dir
 
     def __iter__(self) -> Iterator[Path]:
-        return iter((self.temp_dir, self.passlog_dir, self.encoded_dir, self.originals_dir, self.processed_dir))
+        return iter(
+            (
+                self.temp_dir,
+                self.passlog_dir,
+                self.encoded_dir,
+                self.optimized_dir,
+                self.originals_dir,
+                self.processed_dir,
+            )
+        )
 
     @property
     def root_dir(self) -> Path:
@@ -66,6 +97,15 @@ class SpecialDirs:
         return self._root_dir / Constants.DIR_ENCODED
 
     @property
+    def optimized_dir(self) -> Path:
+        """The finished file, before it is renamed into `processed_dir`."""
+        return self._root_dir / Constants.DIR_OPTIMIZED
+
+    @property
+    def state_file(self) -> Path:
+        return self._root_dir / Constants.FILE_STATE
+
+    @property
     def originals_dir(self) -> Path:
         return self._root_dir / Constants.DIR_ORIGINALS
 
@@ -79,6 +119,19 @@ class SpecialDirs:
     def create(self) -> None:
         for spec_dir in self:
             spec_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _clear(directory: Path) -> None:
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True, exist_ok=True)
+
+    def clear_workdirs(self) -> None:
+        """The passlog is not part of it: a finished first pass outlives an interrupted run."""
+        self._clear(self.encoded_dir)
+        self._clear(self.optimized_dir)
+
+    def clear_passlog(self) -> None:
+        self._clear(self.passlog_dir)
 
 
 @dataclass
@@ -105,6 +158,9 @@ class DefaultsConfig(Serializable):
     limit_video_bitrate: int = 2800
     limit_video_height: int = 1080
     limit_audio_channel_bitrate: int = 96
+
+    # Turned off for filesystems that report a free space that is not there to use
+    check_free_space: bool = True
 
     @property
     def limit_video_width(self) -> int:
@@ -137,8 +193,12 @@ class Config(Serializable):
             self.defaults.from_dict(data.pop("defaults") or {})
 
         if "locations" in data:
+            locations = data.pop("locations") or []
+            if not isinstance(locations, list):
+                raise ValueError(f"Expected a list of locations, got {locations!r}")
+
             self.locations = []
-            for loc_data in data.pop("locations") or []:
+            for loc_data in locations:
                 loc_config = LocationConfig()
                 loc_config.from_dict(self.defaults.to_dict())
                 loc_config.from_dict(loc_data)
@@ -156,6 +216,8 @@ def load_config(file_path: Path) -> None:
     # An empty file is more likely caught mid-save than meant to drop every location
     if not data:
         return
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a mapping of configuration keys, got {data!r}")
 
     loaded = Config()
     loaded.from_dict(data)
@@ -172,10 +234,14 @@ def load_config_override(location_config: LocationConfig, base: dict) -> None:
         return
 
     try:
-        data = yaml.safe_load(override_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as e:
+        data = yaml.safe_load(override_path.read_text(encoding="utf-8")) or {}
+        # The watcher and the special directories are bound to the path the location started with
+        if isinstance(data, dict) and "path" in data:
+            raise ValueError("'path' cannot be overridden")
+        location_config.from_dict(data)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        location_config.from_dict(base)
         log.error(f"Configuration override '{override_path}' ignored: {e}")
         return
 
-    location_config.from_dict(data or {})
     log.info(f"Configuration override '{override_path}' applied")

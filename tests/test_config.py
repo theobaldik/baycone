@@ -171,6 +171,38 @@ class TestLoadConfigOverride:
         override.write_text("")
         config_module.load_config_override(location_config, location_config.to_dict())
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "- just\n- a list\n",
+            "just text\n",
+            "allowed_extensions: 5\n",
+            "allowed_extensions: [5]\n",
+            "target_video_bitrate: fast\n",
+            "path: elsewhere\n",
+        ],
+        ids=["list", "scalar", "not a list", "list of numbers", "not a number", "path"],
+    )
+    def test_wrongly_typed_override_file_is_ignored(self, location_config, override, content, caplog):
+        """Such a file used to raise in the middle of a scan and take the service down."""
+        base = location_config.to_dict()
+        override.write_text(content)
+        config_module.load_config_override(location_config, base)
+        assert location_config.to_dict() == base
+        assert "ignored" in caplog.text
+
+    def test_override_with_one_bad_key_is_ignored_as_a_whole(self, location_config, override):
+        base = location_config.to_dict()
+        override.write_text("target_video_bitrate: 777\nallowed_extensions: 5\n")
+        config_module.load_config_override(location_config, base)
+        assert location_config.to_dict() == base
+
+    def test_override_that_is_not_utf8_is_ignored(self, location_config, override):
+        base = location_config.to_dict()
+        override.write_bytes(b"target_video_codec: \xff\xfe\n")
+        config_module.load_config_override(location_config, base)
+        assert location_config.to_dict() == base
+
     def test_invalid_override_file_is_ignored(self, location_config, override):
         before = location_config.target_video_bitrate
         override.write_text("target_video_bitrate: [unclosed\n")
@@ -191,6 +223,8 @@ class TestSpecialDirs:
         assert dirs.temp_dir == tmp_path / Constants.DIR_TEMP
         assert dirs.passlog_dir == tmp_path / Constants.DIR_PASSLOG
         assert dirs.encoded_dir == tmp_path / Constants.DIR_ENCODED
+        assert dirs.optimized_dir == tmp_path / Constants.DIR_OPTIMIZED
+        assert dirs.state_file == tmp_path / Constants.FILE_STATE
         assert dirs.originals_dir == tmp_path / Constants.DIR_ORIGINALS
         assert dirs.processed_dir == tmp_path / Constants.DIR_PROCESSED
 
@@ -200,6 +234,35 @@ class TestSpecialDirs:
 
     def test_iterates_all_special_dirs(self, tmp_path):
         assert len(list(SpecialDirs(tmp_path))) == len(Constants.SPECIAL_DIRS)
+
+    def test_clear_workdirs_empties_the_intermediate_files_only(self, tmp_path):
+        dirs = SpecialDirs(tmp_path)
+        dirs.create()
+        kept = [
+            dirs.passlog_dir / "passlog-0.log",
+            dirs.state_file,
+            tmp_path / Constants.FILE_CONFIG_OVERRIDE,
+            dirs.originals_dir / "movie.mkv",
+            dirs.processed_dir / "movie.mp4",
+            tmp_path / "pending.mkv",
+        ]
+        removed = [dirs.encoded_dir / "movie.mp4", dirs.optimized_dir / "Show" / "episode.mp4"]
+        for file_path in kept + removed:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+
+        dirs.clear_workdirs()
+
+        assert all(file_path.is_file() for file_path in kept)
+        assert not any(file_path.exists() for file_path in removed)
+        assert dirs.encoded_dir.is_dir() and dirs.optimized_dir.is_dir()
+
+    def test_clear_passlog(self, tmp_path):
+        dirs = SpecialDirs(tmp_path)
+        dirs.create()
+        (dirs.passlog_dir / "passlog-0.log").touch()
+        dirs.clear_passlog()
+        assert list(dirs.passlog_dir.iterdir()) == []
 
 
 class TestLocationConfig:
@@ -221,3 +284,55 @@ class TestConstants:
         monkeypatch.setenv("BAYCONE_LOCATIONS", "/locations")
         monkeypatch.setenv("BAYCONE_CONFIG", "/config/config.yml")
         assert Constants.get_missing_env_variables() == []
+
+
+class TestValidation:
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            "poll_interval: soon",
+            "poll_interval: 0",
+            "poll_interval: -5",
+            "poll_interval: true",
+            "ffmpeg_path: 5",
+            "defaults: [a, b]",
+            "defaults:\n  allowed_extensions: .mkv",
+            "defaults:\n  allowed_extensions: [1, 2]",
+            "defaults:\n  target_video_bitrate: high",
+            "defaults:\n  target_video_bitrate: 0",
+            "defaults:\n  check_free_space: 1",
+            "defaults:\n  target_extension: [.mp4]",
+            "locations: movies",
+            "locations:\n  - movies",
+            "locations:\n  - path: 5",
+            "locations:\n  - path: movies\n    limit_video_height: tall",
+        ],
+    )
+    def test_wrong_value_is_rejected(self, yaml_text):
+        with pytest.raises(ValueError):
+            parse(yaml_text)
+
+    def test_error_names_the_key(self):
+        with pytest.raises(ValueError, match="target_video_bitrate"):
+            parse("defaults:\n  target_video_bitrate: high")
+
+    def test_whole_number_is_fine_for_a_fractional_setting(self):
+        assert parse("poll_interval: 10").poll_interval == 10
+
+    def test_fraction_is_fine_for_a_bitrate(self):
+        assert parse("defaults:\n  target_video_bitrate: 2250.0").defaults.target_video_bitrate == 2250.0
+
+    def test_empty_list_is_fine(self):
+        assert parse("defaults:\n  target_subtitle_languages: []").defaults.target_subtitle_languages == []
+
+    def test_free_space_check_is_on_by_default_and_overridable_per_location(self):
+        cfg = parse("locations:\n  - path: movies\n  - path: nas\n    check_free_space: false")
+        assert [lc.check_free_space for lc in cfg.locations] == [True, False]
+
+    def test_file_that_is_not_a_mapping_leaves_config_untouched(self, tmp_path):
+        config_file = tmp_path / "config.yml"
+        config_file.write_text("- just\n- a list\n")
+        before = config_module.config.to_dict()
+        with pytest.raises(ValueError):
+            load_config(config_file)
+        assert config_module.config.to_dict() == before

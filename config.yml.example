@@ -45,6 +45,10 @@ defaults:
   # win, else the most channels below it.
   target_audio_channels: 2
 
+  # Wait with a file while the disk lacks the space for its output, instead of failing halfway through. Set to false
+  # for a network share that reports a free space that is not really there to use.
+  check_free_space: true
+
   # Text subtitles extracted to '<name>.<2-letter lang>.srt' (e.g. movie.cs.srt) next to the processed file, always
   # as UTF-8. ISO 639-2 codes, in this order, one per language. Bitmap subtitles (PGS, VobSub) are skipped.
   # Empty (default) disables the extraction.

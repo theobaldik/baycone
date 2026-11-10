@@ -22,6 +22,9 @@ plain MP4 that any player handles.
   container alone differs, and copies the video stream when only the audio needs re-encoding
 - Waits for files that are still being copied in, and never touches the original until the encoded result has been
   written successfully. A file that fails is left in place and retried once it is modified
+- Survives restarts, crashes and power loss: the library only ever gets complete files, an interrupted file is picked
+  up again (straight from the second pass when the first one had finished), and failed files stay remembered
+- Waits for free disk space instead of failing, and stops an ffmpeg that hangs
 - Runs as a Docker container; configured entirely through a YAML file and environment variables
 - Ships a standalone CLI (`bin/baycone`) for one-off transcodes
 
@@ -35,6 +38,10 @@ plain MP4 that any player handles.
 - Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
   VobSub) are dropped.
 - A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
+- Two sources that differ only in their extension (`movie.mkv` and `movie.avi`) produce the same `movie.mp4`; the one
+  processed later replaces the other's output. Both originals are kept.
+- An encode interrupted during its first pass, or part-way through its second, repeats that pass from the start.
+- Only one Baycone instance may run on a location at a time.
 - An aborted copy is recognized by data missing from the end of the duration the header declares. A copy cut off
   within its last minute, or any cut-off MPEG-TS (its duration is estimated from the data present), is still processed.
 - HEVC output does not play in every browser: Chrome and Edge need hardware decoding, Firefox mostly lacks it. TVs,
@@ -49,11 +56,18 @@ Each watched root directory gets the following subdirectories created automatica
 ```
 videos/
 ├── .baycone/
-│   ├── passlogfiles/       ← two-pass log files (temporary)
-│   └── encoded/            ← intermediate encoded files (temporary)
+│   ├── passlogfiles/       ← two-pass log files (temporary, kept for a resume)
+│   ├── encoded/            ← intermediate encoded files (temporary)
+│   ├── optimized/          ← finished files before they are moved into place (temporary)
+│   ├── state.json          ← failed files and the file in progress
+│   └── config.override.yml ← optional, see Configuration
 ├── _baycone_originals/   ← original files are moved here after encoding
 └── _baycone_processed/   ← finished MP4s are moved here
 ```
+
+A finished file appears in `_baycone_processed/` in one step, already complete and synced to disk, and only then is
+its original moved to `_baycone_originals/`. An original is never overwritten there: when a file of the same name
+is processed again, the newer one is archived as `movie.1.mkv`, `movie.2.mkv`, ...
 
 ## Configuration
 
@@ -94,6 +108,7 @@ defaults:
   target_audio_languages: [ original, eng, cze ]  # kept in this order
   target_audio_channels: 2          # preferred channel count per language
   target_subtitle_languages: [ eng, cze ]  # optional, extracted to .srt files
+  check_free_space: true            # wait for disk space, see "Failed and waiting files"
 
 locations:
   - path: movies
@@ -142,6 +157,24 @@ loaded is logged, and the previous configuration stays in use. In Docker, mount 
 the file: editors save by replacing the file, which a single-file bind mount does not see. Environment variables still
 need a restart.
 
+### Failed and waiting files
+
+A file that fails is left where it is and skipped. This is remembered in `.baycone/state.json`, so it also holds
+after a restart. A failed file is tried again when
+
+- the file itself changes (it is copied again or `touch`ed), or
+- the configuration is reloaded, which may be the fix: edit or `touch` `config.yml` to retry the failed files of
+  every location, or a location's `config.override.yml` to retry just its own.
+
+The same goes for a file the service died on three times in a row (a crash, a kill or a power loss, not a regular
+stop) and for an ffmpeg that made no progress for 30 minutes.
+
+Before a file is processed, the free space of its location is compared with the expected size of the output. While
+there is too little, the file is not failed: the location is paused and checked again every 5 minutes, other
+locations carry on. Filesystems that do not report their space are not checked. For one that reports a free space
+that is not really there to use, as some network shares do, turn the check off with `check_free_space: false` for
+that location.
+
 ## Environment variables
 
 | Variable            | Default (Docker)     | Description                                |
@@ -159,6 +192,13 @@ services:
   baycone:
     image: theobaldik/baycone:0.5.1
     user: "1000:1000"
+    # Comes back after a crash or a reboot; interrupted files are picked up again
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # ffmpeg parses untrusted media: no network, no privilege escalation, and
     # nothing writable beyond the mounts and the temp dir
     network_mode: none
