@@ -43,7 +43,8 @@ plain MP4 that any player handles.
 - An encode interrupted during its first pass, or part-way through its second, repeats that pass from the start.
 - Only one Baycone instance may run on a location at a time.
 - An aborted copy is recognized by data missing from the end of the duration the header declares. A copy cut off
-  within its last 30 seconds, or any cut-off MPEG-TS (its duration is estimated from the data present), is still processed.
+  within its last 30 seconds, or any cut-off MPEG-TS (its duration is estimated from the data present), is still
+  processed.
 - HEVC output does not play in every browser: Chrome and Edge need hardware decoding, Firefox mostly lacks it. TVs,
   phones and Safari play it.
 - Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colors. Profiles 7 and 8
@@ -190,7 +191,7 @@ There is usually no need to override the variables when running in Docker.
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.5.1
+    image: theobaldik/baycone:0.6.0
     user: "1000:1000"
     # Comes back after a crash or a reboot; interrupted files are picked up again
     restart: unless-stopped
