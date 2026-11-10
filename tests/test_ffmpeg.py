@@ -32,6 +32,7 @@ def all_commands() -> list[list[str]]:
         ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
         ffmpeg.get_cmd_cropdetect(INPUT),
         ffmpeg.get_cmd_ffprobe(INPUT),
+        ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0),
         ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1, copy=False),
     ]
 
@@ -65,9 +66,13 @@ class TestBinaryPaths:
     def test_ffprobe_path_is_configurable(self, default_binaries):
         config.ffprobe_path = "/opt/ffmpeg/bin/ffprobe"
         assert ffmpeg.get_cmd_ffprobe(INPUT)[0] == "/opt/ffmpeg/bin/ffprobe"
+        assert ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0)[0] == "/opt/ffmpeg/bin/ffprobe"
 
 
 class TestCommandContent:
+    def test_ffprobe_tail_reads_one_packet_from_start(self):
+        assert value_of(ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0), "-read_intervals") == ["10.0%+#1"]
+
     def test_pass_1_discards_audio_and_output(self):
         cmd = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [])
         assert "-an" in cmd
@@ -136,7 +141,7 @@ class TestCommandContent:
         assert value_of(ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 0, copy=True), "-c:s") == ["copy"]
 
     def test_cover_art_is_never_mapped(self):
-        for cmd in all_commands()[:-2]:
+        for cmd in all_commands()[:-3]:
             assert value_of(cmd, "-map")[0] == "0:V:0"
 
     def test_video_only_without_audio_tracks(self):

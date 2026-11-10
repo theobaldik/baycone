@@ -35,6 +35,8 @@ plain MP4 that any player handles.
 - Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
   VobSub) are dropped.
 - A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
+- An aborted copy is recognized by data missing from the end of the duration the header declares. A copy cut off
+  within its last minute, or any cut-off MPEG-TS (its duration is estimated from the data present), is still processed.
 - HEVC output does not play in every browser: Chrome and Edge need hardware decoding, Firefox mostly lacks it. TVs,
   phones and Safari play it.
 - Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colors. Profiles 7 and 8

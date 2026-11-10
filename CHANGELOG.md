@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Skip input files whose copy was cut off, instead of encoding the truncated file
+
 ## [0.5.1] - 2026-11-10
 
 ### Changed

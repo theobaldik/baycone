@@ -31,6 +31,9 @@ H264_EFFICIENCY: dict[str, float] = {"hevc": 1.5, "av1": 2.0, "vp9": 1.5, "mpeg4
 
 CROP_PATTERN = re.compile(r"crop=\d+:(\d+):\d+:(\d+)")
 
+# The seek may land a whole GOP before its target, so data is expected within twice this of the declared end
+TAIL_SECONDS: float = 30.0
+
 
 def _format_duration(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
@@ -167,6 +170,27 @@ class Analyzer:
             return None
 
     @staticmethod
+    def _is_complete(file_path: Path, start_time: float, duration: float) -> bool:
+        """False for an aborted copy, whose header still declares the full duration."""
+        end = start_time + duration
+        try:
+            cmd = ffmpeg.get_cmd_ffprobe_tail(file_path, max(end - TAIL_SECONDS, start_time))
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            packets = json.loads(result.stdout).get("packets", [])
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+            log.error(f"Checking the end of '{file_path}' failed: {e}")
+            return False
+
+        last = _parse_number(packets[0].get("pts_time")) if packets else start_time
+        if last < end - 2 * TAIL_SECONDS:
+            log.warning(
+                f"'{file_path}' looks truncated: data ends near {_format_duration(last - start_time)},"
+                f" the header declares {_format_duration(duration)}"
+            )
+            return False
+        return True
+
+    @staticmethod
     def _get_bitrate(stream: dict) -> int:
         """In kbps, 0 when unknown. Matroska only reports it in the 'BPS' tag."""
         bitrate = stream.get("bit_rate") or stream.get("tags", {}).get("BPS")
@@ -179,11 +203,16 @@ class Analyzer:
         if not probe_result:
             return FileInfo(file_path=file_path, is_valid=False)
 
-        file_info = FileInfo(file_path=file_path, is_valid=True)
-
         format_info = probe_result.get("format", {})
+        duration = _parse_number(format_info.get("duration"))
+        if duration > 0 and not Analyzer._is_complete(
+            file_path, _parse_number(format_info.get("start_time")), duration
+        ):
+            return FileInfo(file_path=file_path, is_valid=False)
+
+        file_info = FileInfo(file_path=file_path, is_valid=True)
         file_info.containers = format_info.get("format_name", "").split(",")
-        file_info.duration = int(_parse_number(format_info.get("duration")))
+        file_info.duration = int(duration)
 
         streams = probe_result.get("streams", [])
 

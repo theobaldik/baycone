@@ -349,6 +349,20 @@ CMD_FFPROBE = [
     "{input_file}",
 ]
 
+# A single packet near the declared end; an aborted copy keeps the full-length header but lacks the data
+CMD_FFPROBE_TAIL = [
+    "{ffprobe}",
+    "-v",
+    "error",
+    "-read_intervals",
+    "{start}%+#1",
+    "-show_entries",
+    "packet=pts_time",
+    "-print_format",
+    "json",
+    "{input_file}",
+]
+
 
 def _render(template: list[str], splices: dict[str, list[str]] | None = None, **values: object) -> list[str]:
     splices = splices or {}
@@ -483,3 +497,7 @@ def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int, c
 
 def get_cmd_ffprobe(input_file: Path) -> list[str]:
     return _render(CMD_FFPROBE, input_file=input_file.absolute())
+
+
+def get_cmd_ffprobe_tail(input_file: Path, start: float) -> list[str]:
+    return _render(CMD_FFPROBE_TAIL, input_file=input_file.absolute(), start=start)

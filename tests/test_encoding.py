@@ -13,7 +13,7 @@ from baycone.encoding import Analyzer, Encoder, FileInfo, VideoStream
 
 def make_ffprobe_output(
     container: str = "mp4",
-    duration: float = 100.0,
+    duration: float | str = 100.0,
     video_codec: str = "h264",
     video_bitrate: int = 2_000_000,
     video_width: int = 1920,
@@ -76,7 +76,10 @@ def media_file(location_dir) -> Path:
 
 
 def analyze(file_path: Path, ffprobe_output: str, method=Analyzer.analyze) -> FileInfo:
-    with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=ffprobe_output)):
+    with (
+        patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=ffprobe_output)),
+        patch.object(Analyzer, "_is_complete", return_value=True),
+    ):
         return method(file_path)
 
 
@@ -150,9 +153,54 @@ class TestGetFfprobeResult:
             assert Analyzer._get_ffprobe_result(media_file) is None
 
 
+class TestIsComplete:
+    def _check(self, media_file: Path, packets: list[dict], start_time: float = 0.0) -> tuple[bool, list[str]]:
+        stdout = json.dumps({"packets": packets})
+        with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=stdout)) as run:
+            complete = Analyzer._is_complete(media_file, start_time, 3600.0)
+        return complete, run.call_args.args[0]
+
+    def test_complete_when_a_packet_is_near_the_end(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3575.5"}])[0] is True
+
+    def test_tolerates_seek_landing_a_gop_early(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3560.0"}])[0] is True
+
+    def test_truncated_when_data_ends_early(self, media_file):
+        assert self._check(media_file, [{"pts_time": "1800.0"}])[0] is False
+
+    def test_truncated_without_packets(self, media_file):
+        assert self._check(media_file, [])[0] is False
+
+    def test_truncated_when_probe_fails(self, media_file):
+        with patch("baycone.encoding.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffprobe")):
+            assert Analyzer._is_complete(media_file, 0.0, 3600.0) is False
+
+    def test_seeks_relative_to_start_time(self, media_file):
+        complete, cmd = self._check(media_file, [{"pts_time": "4575.5"}], start_time=1000.0)
+        assert complete is True
+        assert "4570.0%+#1" in cmd
+
+    def test_early_data_with_start_time_is_truncated(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3575.5"}], start_time=1000.0)[0] is False
+
+
 class TestGetFileInfo:
     def _info(self, media_file: Path, **kwargs) -> FileInfo:
         return analyze(media_file, make_ffprobe_output(**kwargs), method=Analyzer._get_file_info)
+
+    def test_is_invalid_when_truncated(self, media_file):
+        with (
+            patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=make_ffprobe_output())),
+            patch.object(Analyzer, "_is_complete", return_value=False),
+        ):
+            assert Analyzer._get_file_info(media_file).is_valid is False
+
+    def test_unknown_duration_skips_the_end_check(self, media_file):
+        output = make_ffprobe_output(duration="N/A")
+        with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=output)) as run:
+            assert Analyzer._get_file_info(media_file).is_valid is True
+        assert run.call_count == 1
 
     def test_is_valid_on_successful_probe(self, media_file):
         assert self._info(media_file).is_valid is True

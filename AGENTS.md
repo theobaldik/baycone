@@ -52,7 +52,9 @@ Two tests guard against past data-loss/logic bugs — keep them:
 - `baycone/subtitles.py` — `SubtitleStream` and `select_subtitle_streams()` (text codecs only, `target_subtitle_languages`
   in order), `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
   Extracted by `Encoder._extract_subtitles()` after optimize; a failure there only warns
-- `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
+- `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class. A file is
+  invalid when no packet lies near its declared end (`Analyzer._is_complete`, one seek, no decode): an aborted copy
+  keeps the full-length header, and its size and mtime are as stable as a finished one's
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
   `config.ffprobe_path`. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` /
