@@ -23,16 +23,16 @@ defaults:
   allowed_audio_codecs: [ aac ]
   # Source bitrates are compared as their h264 / aac equivalent (e.g. hevc counts 1.5x), also when capping the encode.
   limit_video_bitrate: 2800         # kbps - an unknown bitrate is always re-encoded, also for audio
-  # Larger videos are scaled down to fit a 16:9 box of this height (1080 -> 1920x1080). Values above 1080 exceed the
-  # h264 level 4.1 the encode is tagged with.
+  # Larger videos are scaled down to fit a 16:9 box of this height (1080 -> 1920x1080, 2160 -> 3840x2160).
   limit_video_height: 1080
   limit_audio_channel_bitrate: 96   # kbps per channel
 
   # Output written when a file does have to be re-encoded.
   target_extension: .mp4
   target_container: mp4
+  # h264 (libx264, 8-bit) or hevc (libx265, 10-bit Main10, tagged 'hvc1' for Apple players). HDR is tone mapped to SDR.
   target_video_codec: h264
-  target_video_bitrate: 2250        # kbps - never upscales above the source bitrate
+  target_video_bitrate: 2250        # kbps of the target codec - never upscales above the source bitrate
   target_audio_codec: aac
   target_audio_channel_bitrate: 64  # kbps per channel, multiplied by the channel count
 
@@ -58,3 +58,11 @@ locations:
     # Any 'defaults' key can be overridden per location.
     target_video_bitrate: 1800
     limit_video_bitrate: 2200
+
+  - path: movies-4k
+    # hevc sources within the limits are kept as they are
+    allowed_video_codecs: [ h264, hevc ]
+    limit_video_height: 2160
+    limit_video_bitrate: 16000
+    target_video_codec: hevc
+    target_video_bitrate: 8000

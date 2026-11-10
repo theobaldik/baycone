@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (292 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (304 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -55,8 +55,11 @@ Two tests guard against past data-loss/logic bugs — keep them:
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
-  `config.ffprobe_path`. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` elements by
-  `_render()`, built from the `ARGS_*` and `FILTER_*` templates. Both encode passes must get the same video filters.
+  `config.ffprobe_path`. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` /
+  `VIDEO_CODEC_ARGS` elements by `_render()`, built from the `ARGS_*` and `FILTER_*` templates. Both encode passes
+  must get the same video filters. Everything codec-specific (encoder, pixel formats, per-pass args) lives in one
+  `VideoCodec` entry of `VIDEO_CODECS`, keyed by `target_video_codec`; x265 needs the same GOP and rate-control
+  params in both passes, and `-x265-params` values are `key=value` with no `:` inside a value
 - `baycone/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into them (they
   grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
   scan — never sleep per file. Failed files are skipped until they change (`mark_failed`).
@@ -93,6 +96,8 @@ logging.
   `dub` is not special
 - `FileInfo.file_path` setter auto-resolves `LocationConfig` and `SpecialDirs` from the global `config.locations`
 - Use `deepcopy`/`copy` when returning mutable internal state from properties
+- American English (`color`, `behavior`, `recognize`, `mislabeled`) in code, comments, docs and the changelog.
+  Third-party names keep their own spelling (x264's `analyse=`)
 - Docstrings and comments only where the code can't speak for itself (a non-obvious why, invariant or gotcha) —
   one short line, no restating names or signatures, no section banners, no commented-out code. `TODO`s are fine
 
@@ -166,7 +171,7 @@ Image tags use the plain version with no `v` prefix (`theobaldik/baycone:0.1.0`)
 
 - Both base images are pinned to a patch version **and** a multi-arch index digest. Bump them deliberately; never loosen
   a pin back to a floating tag like `:latest`.
-- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.9.21`).
+- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.13.7`).
 - The image runs as **uid/gid 1000, non-root** (`USER 1000:1000`). Anything the container writes goes into a
   bind-mounted library, so never add build steps that require root at runtime; hosts with different ids override
   `user:` rather than rebuilding.

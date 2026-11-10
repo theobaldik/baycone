@@ -264,7 +264,8 @@ class Analyzer:
         if (
             video.codec not in location_config.allowed_video_codecs
             or not 0 < video.h264_bitrate <= location_config.limit_video_bitrate
-            or video.pix_fmt != ffmpeg.TARGET_PIX_FMT
+            or video.pix_fmt not in ffmpeg.VIDEO_CODECS.get(video.codec, ffmpeg.VIDEO_CODECS["h264"]).pix_fmts
+            or video.is_hdr
             or video.width > location_config.limit_video_width
             or video.height > location_config.limit_video_height
         ):
@@ -293,6 +294,14 @@ class Encoder:
         try:
             if not self._processing_file.is_valid:
                 log.error(f"Processing aborted: Invalid file '{file_path}'")
+                return False
+
+            codec = self._processing_file.location_config.target_video_codec
+            if codec not in ffmpeg.VIDEO_CODECS:
+                log.error(
+                    f"Processing aborted: Unsupported target_video_codec '{codec}',"
+                    f" use one of {list(ffmpeg.VIDEO_CODECS)}"
+                )
                 return False
 
             log.info(
@@ -329,9 +338,11 @@ class Encoder:
             self._processing_file = None
 
     def _target_video_bitrate(self) -> int:
-        return cap_bitrate(
-            self._processing_file.video_stream.h264_bitrate, self._processing_file.location_config.target_video_bitrate
-        )
+        """`target_video_bitrate` is in kbps of the target codec, so the source is capped in its terms too."""
+        location_config = self._processing_file.location_config
+        efficiency = H264_EFFICIENCY.get(location_config.target_video_codec, 1.0)
+        source = int(self._processing_file.video_stream.h264_bitrate / efficiency)
+        return cap_bitrate(source, location_config.target_video_bitrate)
 
     def _video_filters(self) -> dict[str, str]:
         """Description -> ffmpeg filter, in the order they apply."""
@@ -360,7 +371,8 @@ class Encoder:
         source = f"{video.codec} {video.width}x{video.height}{' HDR' if video.is_hdr else ''}"
         action = "copy"
         if video.shall_encode:
-            action = f"encode to h264 {_format_bitrate(self._target_video_bitrate())}"
+            codec = file_info.location_config.target_video_codec
+            action = f"encode to {codec} {_format_bitrate(self._target_video_bitrate())}"
             if filters := self._video_filters():
                 action += f" ({', '.join(filters)})"
         log.info(f"Video: {source} {_format_bitrate(video.bitrate)}, {action}")
@@ -422,6 +434,7 @@ class Encoder:
             log.error(f"Encoding skipped: Invalid file for encoding: '{file_info.file_path}'")
             return False
 
+        codec = file_info.location_config.target_video_codec
         video_bitrate = self._target_video_bitrate()
         video_filters = list(self._video_filters().values())
 
@@ -432,7 +445,7 @@ class Encoder:
             if file_info.video_stream.shall_encode:
                 file_info.passlog_path.parent.mkdir(parents=True, exist_ok=True)
                 cmd = ffmpeg.get_cmd_encode_movie_pass_1(
-                    file_info.file_path, file_info.passlog_path, video_bitrate, video_filters
+                    file_info.file_path, file_info.passlog_path, codec, video_bitrate, video_filters
                 )
                 self._run_ffmpeg(cmd, "Encoding 1st pass")
 
@@ -440,6 +453,7 @@ class Encoder:
                     file_info.file_path,
                     file_info.encoding_path,
                     file_info.passlog_path,
+                    codec,
                     video_bitrate,
                     video_filters,
                     file_info.audio_tracks,

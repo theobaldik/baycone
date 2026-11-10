@@ -24,8 +24,10 @@ def default_binaries():
 
 def all_commands() -> list[list[str]]:
     return [
-        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250, []),
-        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS),
+        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, []),
+        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS),
+        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "hevc", 2250, []),
+        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS),
         ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS),
         ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
         ffmpeg.get_cmd_cropdetect(INPUT),
@@ -44,14 +46,14 @@ class TestPlaceholders:
             assert not [arg for arg in cmd if "{" in arg or "}" in arg]
 
     def test_paths_are_absolute(self):
-        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS)
+        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS)
         assert str(INPUT.absolute()) in cmd
         assert str(OUTPUT.absolute()) in cmd
 
 
 class TestBinaryPaths:
     def test_defaults_to_path_lookup(self, default_binaries):
-        assert ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250, [])[0] == "ffmpeg"
+        assert ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [])[0] == "ffmpeg"
         assert ffmpeg.get_cmd_ffprobe(INPUT)[0] == "ffprobe"
 
     def test_ffmpeg_path_is_configurable(self, default_binaries):
@@ -67,15 +69,52 @@ class TestBinaryPaths:
 
 class TestCommandContent:
     def test_pass_1_discards_audio_and_output(self):
-        cmd = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250, [])
+        cmd = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [])
         assert "-an" in cmd
         assert "2250k" in cmd
         assert cmd[cmd.index("-pass") + 1] == "1"
 
     def test_pass_2_sets_video_bitrate(self):
-        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS)
+        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS)
         assert cmd[cmd.index("-b:v") + 1] == "2250k"
         assert cmd[cmd.index("-pass") + 1] == "2"
+
+    def test_h264_passes_use_libx264(self):
+        for cmd in (
+            ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, []),
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS),
+        ):
+            assert value_of(cmd, "-c:v") == ["libx264"]
+            assert value_of(cmd, "-passlogfile") == [str(PASSLOG.absolute())]
+
+    @pytest.mark.parametrize("number", [1, 2])
+    def test_hevc_passes_use_x265_stats(self, number):
+        if number == 1:
+            cmd = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "hevc", 2250, [])
+        else:
+            cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS)
+        assert value_of(cmd, "-c:v") == ["libx265"]
+        assert value_of(cmd, "-x265-params")[0].startswith(f"pass={number}:stats={PASSLOG.absolute()}:")
+        assert "-pass" not in cmd
+        assert "-passlogfile" not in cmd
+
+    def test_hevc_is_tagged_hvc1_for_apple_players(self):
+        cmd = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS)
+        assert value_of(cmd, "-tag:v") == ["hvc1"]
+        assert value_of(cmd, "-profile:v") == ["main10"]
+
+    def test_hevc_passes_share_gop_and_rate_control(self):
+        pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "hevc", 2250, [])
+        pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS)
+        params_1 = value_of(pass_1, "-x265-params")[0].split(":")[2:]
+        params_2 = value_of(pass_2, "-x265-params")[0].split(":")[2:]
+        assert params_1 == ffmpeg.X265_PARAMS_MOVIE_PASS_1
+        assert params_2[: len(params_1)] == params_1
+
+    def test_x265_params_are_key_value_pairs(self):
+        for param in ffmpeg.X265_PARAMS_MOVIE_PASS_2:
+            key, _, value = param.partition("=")
+            assert key and value and ":" not in value
 
     def test_audio_encode_copies_video(self):
         cmd = ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS)
@@ -102,7 +141,7 @@ class TestCommandContent:
 
     def test_video_only_without_audio_tracks(self):
         for cmd in (
-            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], []),
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], []),
             ffmpeg.get_cmd_optimize(INPUT, OUTPUT, [], encoded=False),
         ):
             assert not [arg for arg in value_of(cmd, "-map") if arg.startswith("0:a")]
@@ -116,7 +155,7 @@ class TestCommandContent:
 
     def test_faststart_is_requested(self):
         for cmd in (
-            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS),
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS),
             ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
         ):
             assert cmd[cmd.index("-movflags") + 1] == "+faststart"
@@ -126,7 +165,7 @@ class TestAudioEncodeArgs:
     @pytest.mark.parametrize(
         "cmd",
         [
-            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS),
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS),
             ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS),
         ],
     )
@@ -169,21 +208,22 @@ class TestAudioMetadataArgs:
 class TestVideoArgs:
     FILTERS = [ffmpeg.get_filter_crop(800, 140), ffmpeg.get_filter_scale(1920, 1080)]
 
-    def test_both_passes_output_8_bit(self):
+    @pytest.mark.parametrize("codec,pix_fmt", [("h264", "yuv420p"), ("hevc", "yuv420p10le")])
+    def test_both_passes_output_the_codec_pix_fmt(self, codec, pix_fmt):
         for cmd in (
-            ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250, []),
-            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS),
+            ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, codec, 2250, []),
+            ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, codec, 2250, [], TRACKS),
         ):
-            assert value_of(cmd, "-pix_fmt") == ["yuv420p"]
+            assert value_of(cmd, "-pix_fmt") == [pix_fmt]
 
     def test_both_passes_apply_the_same_filters(self):
-        pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, 2250, self.FILTERS)
-        pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, self.FILTERS, TRACKS)
+        pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, self.FILTERS)
+        pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, self.FILTERS, TRACKS)
         expected = ["crop=iw:800:0:140,scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"]
         assert value_of(pass_1, "-vf") == value_of(pass_2, "-vf") == expected
 
     def test_no_filter_option_without_filters(self):
-        assert "-vf" not in ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, 2250, [], TRACKS)
+        assert "-vf" not in ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS)
 
     def test_tonemap_states_the_source_transfer(self):
         assert ffmpeg.get_filter_tonemap("arib-std-b67").startswith("zscale=tin=arib-std-b67:")

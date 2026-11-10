@@ -9,10 +9,10 @@ plain MP4 that any player handles.
 ## Features
 
 - Watches multiple directories for new video files (configurable poll interval)
-- Transcodes to **h264 / AAC** MP4 using a two-pass `libx264` encode, always 8-bit (`yuv420p`) for broad player
-  support
-- Scales larger videos down to fit 1920×1080 (configurable), crops black bars at the top and bottom, and tone maps
-  HDR10 / HLG to SDR — all only when the video is re-encoded anyway
+- Transcodes to **h264 or hevc / AAC** MP4 using a two-pass `libx264` / `libx265` encode — h264 in 8-bit (`yuv420p`) for
+  broad player support, hevc in 10-bit Main10 (`yuv420p10le`, SDR)
+- Scales larger videos down to fit 1920×1080 (configurable, up to 3840×2160), crops black bars at the top and bottom,
+  and tone maps HDR10 / HLG to SDR — all only when the video is re-encoded anyway
 - Moves the moov atom to the front of the file (`-movflags +faststart`) for instant streaming
 - Keeps the original audio language plus your preferred languages, one track per language at the preferred channel
   count, and drops the rest
@@ -27,7 +27,7 @@ plain MP4 that any player handles.
 
 ## Limitations
 
-- Commentary, audio description and other special audio tracks are always dropped. They are recognised by their
+- Commentary, audio description and other special audio tracks are always dropped. They are recognized by their
   disposition flags only, so an unflagged one can still be picked as a regular track of its language.
 - MP4 has no "original" track flag — the original language is marked by being the first (default) track. The flag is
   kept when `target_container` is Matroska.
@@ -35,7 +35,9 @@ plain MP4 that any player handles.
 - Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
   VobSub) are dropped.
 - A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
-- Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colours. Profile 7 and 8
+- HEVC output does not play in every browser: Chrome and Edge need hardware decoding, Firefox mostly lacks it. TVs,
+  phones and Safari play it.
+- Dolby Vision profile 5 (no HDR10 base layer) is not supported and comes out with wrong colors. Profiles 7 and 8
   carry an HDR10 base layer and are tone mapped from that.
 
 ## Directory structure
@@ -83,8 +85,8 @@ defaults:
   # Used when a file does have to be re-encoded.
   target_extension: .mp4
   target_container: mp4
-  target_video_codec: h264
-  target_video_bitrate: 2250        # kbps — never upscales above the source bitrate
+  target_video_codec: h264          # h264 or hevc
+  target_video_bitrate: 2250        # kbps of the target codec — never upscales above the source bitrate
   target_audio_codec: aac
   target_audio_channel_bitrate: 64  # kbps per channel
   target_audio_languages: [ original, eng, cze ]  # kept in this order
@@ -95,6 +97,12 @@ locations:
   - path: movies
   - path: tv-shows
     target_video_bitrate: 1800        # location-level overrides are supported
+  - path: movies-4k
+    allowed_video_codecs: [ h264, hevc ]
+    limit_video_height: 2160
+    limit_video_bitrate: 16000
+    target_video_codec: hevc
+    target_video_bitrate: 8000
 ```
 
 Each location inherits from `defaults` and can override any field individually. See
@@ -128,7 +136,7 @@ A location can also be reconfigured at runtime without restarting the service by
 Removing it restores the location's settings from `config.yml`.
 
 `config.yml` itself is re-read whenever it changes, between files and never during an encode. A file that cannot be
-loaded is logged and the previous configuration stays in use. In Docker, mount the directory holding the config, not
+loaded is logged, and the previous configuration stays in use. In Docker, mount the directory holding the config, not
 the file: editors save by replacing the file, which a single-file bind mount does not see. Environment variables still
 need a restart.
 
@@ -147,7 +155,7 @@ There is usually no need to override the variables when running in Docker.
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.4.0
+    image: theobaldik/baycone:0.5.0
     user: "1000:1000"
     environment:
       BAYCONE_CONFIG: /config/config.yml
@@ -231,7 +239,7 @@ uv run pytest
 
 ## Documentation
 
-Architecture and behaviour diagrams live in [`docs/`](docs) as PlantUML sources with rendered SVGs:
+Architecture and behavior diagrams live in [`docs/`](docs) as PlantUML sources with rendered SVGs:
 
 | Diagram                                               | Shows                                    |
 |-------------------------------------------------------|------------------------------------------|

@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from baycone.audio import AudioTrack
@@ -7,9 +8,7 @@ from baycone.config import config
 # Spliced in place of these elements: one argument group per output audio track, the video filters
 AUDIO_ARGS = "{audio_args}"
 VIDEO_ARGS = "{video_args}"
-
-# 8-bit 4:2:0, the only format libx264's 'high' profile and every player accept; a no-op for such sources
-TARGET_PIX_FMT = "yuv420p"
+VIDEO_CODEC_ARGS = "{video_codec_args}"
 
 # TODO: Find out which parameters are really necessary and optimize them for both passes
 X264_PARAMS_MOVIE_PASS_1 = [
@@ -61,6 +60,125 @@ X264_PARAMS_MOVIE_PASS_2 = [
     "aq=1,1.00",
 ]
 
+# TODO: Tune; taken from a two-pass x265 3.4 'slow' release encode. Flags need '=1' / '=0' and ',' instead of ':',
+#  pass / stats are prepended by the 'hevc' entry in VIDEO_CODECS
+# GOP and rate control, x265 refuses a second pass whose settings differ from the first
+X265_PARAMS_MOVIE_PASS_1 = [
+    "keyint=250",
+    "min-keyint=23",
+    "open-gop=1",
+    "scenecut=40",
+    "bframes=4",
+    "b-adapt=2",
+    "b-pyramid=1",
+    "bframe-bias=0",
+    "rc-lookahead=25",
+    "cutree=1",
+    "aq-mode=2",
+    "aq-strength=1.00",
+    "qcomp=0.60",
+    "qpstep=4",
+    "qpmin=0",
+    "qpmax=69",
+    "ipratio=1.40",
+    "pbratio=1.30",
+    "cplxblur=20.0",
+    "qblur=0.5",
+]
+
+X265_PARAMS_MOVIE_PASS_2 = [
+    *X265_PARAMS_MOVIE_PASS_1,
+    "ctu=64",
+    "min-cu-size=8",
+    "max-tu-size=32",
+    "tu-inter-depth=1",
+    "tu-intra-depth=1",
+    "ref=4",
+    "limit-refs=3",
+    "limit-modes=1",
+    "rect=1",
+    "amp=0",
+    "me=3",
+    "subme=3",
+    "merange=57",
+    "max-merge=3",
+    "temporal-mvp=1",
+    "weightp=1",
+    "weightb=0",
+    "rd=4",
+    "rdoq-level=2",
+    "psy-rd=2.00",
+    "psy-rdoq=1.00",
+    "rskip=1",
+    "signhide=1",
+    "strong-intra-smoothing=1",
+    "deblock=0,0",
+    "sao=1",
+    "selective-sao=4",
+    "sao-non-deblock=0",
+]
+
+
+@dataclass(frozen=True)
+class VideoCodec:
+    encoder: str
+    pix_fmts: tuple[str, ...]  # the first is encoded to, all are kept when copying
+    pass_1: list[str]
+    pass_2: list[str]
+
+
+# Keyed by the ffprobe codec name, as in `target_video_codec`; libx265 ignores -pass / -passlogfile
+VIDEO_CODECS: dict[str, VideoCodec] = {
+    "h264": VideoCodec(
+        encoder="libx264",
+        # 10-bit h264 has next to no hardware decoding
+        pix_fmts=("yuv420p",),
+        pass_1=[
+            "-x264-params",
+            ":".join(X264_PARAMS_MOVIE_PASS_1),
+            "-pass",
+            "1",
+            "-passlogfile",
+            "{passlog_file}",
+        ],
+        pass_2=[
+            "-x264-params",
+            ":".join(X264_PARAMS_MOVIE_PASS_2),
+            "-preset",
+            "slow",
+            "-tune",
+            "film",
+            "-profile:v",
+            "high",
+            "-pass",
+            "2",
+            "-passlogfile",
+            "{passlog_file}",
+        ],
+    ),
+    # Apple players refuse HEVC in MP4 unless it is tagged 'hvc1' (ffmpeg defaults to 'hev1')
+    "hevc": VideoCodec(
+        encoder="libx265",
+        pix_fmts=("yuv420p10le", "yuv420p"),
+        pass_1=[
+            "-preset",
+            "slow",
+            "-x265-params",
+            ":".join(["pass=1", "stats={passlog_file}", *X265_PARAMS_MOVIE_PASS_1]),
+        ],
+        pass_2=[
+            "-preset",
+            "slow",
+            "-profile:v",
+            "main10",
+            "-x265-params",
+            ":".join(["pass=2", "stats={passlog_file}", *X265_PARAMS_MOVIE_PASS_2]),
+            "-tag:v",
+            "hvc1",
+        ],
+    ),
+}
+
 CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
     "{ffmpeg}",
     "-y",
@@ -73,20 +191,15 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
     "0:V:0",
     VIDEO_ARGS,
     "-pix_fmt",
-    TARGET_PIX_FMT,
+    "{pix_fmt}",
     "-c:v",
-    "libx264",
-    "-x264-params",
-    ":".join(X264_PARAMS_MOVIE_PASS_1),
+    "{encoder}",
+    VIDEO_CODEC_ARGS,
     "-b:v",
     "{video_bitrate}k",
-    "-pass",
-    "1",
     "-an",
     "-f",
     "null",
-    "-passlogfile",
-    "{passlog_file}",
     "-progress",
     "pipe:1",
     os.devnull,
@@ -103,23 +216,12 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "0:V:0",
     VIDEO_ARGS,
     "-pix_fmt",
-    TARGET_PIX_FMT,
+    "{pix_fmt}",
     "-c:v",
-    "libx264",
-    "-x264-params",
-    ":".join(X264_PARAMS_MOVIE_PASS_2),
-    "-preset",
-    "slow",
-    "-tune",
-    "film",
-    "-profile:v",
-    "high",
-    "-level:v",
-    "4.1",
+    "{encoder}",
+    VIDEO_CODEC_ARGS,
     "-b:v",
     "{video_bitrate}k",
-    "-pass",
-    "2",
     AUDIO_ARGS,
     "-movflags",
     "+faststart",
@@ -127,8 +229,6 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "0",
     "-fflags",
     "+genpts",
-    "-passlogfile",
-    "{passlog_file}",
     "-progress",
     "pipe:1",
     "{output_file}",
@@ -152,7 +252,6 @@ CMD_FFMPEG_ENCODE_AUDIO = [
     "{output_file}",
 ]
 
-# TODO: Merge with 2nd pass of encoding
 CMD_FFMPEG_OPTIMIZE = [
     "{ffmpeg}",
     "-y",
@@ -307,14 +406,20 @@ def _audio_metadata_args(audio_tracks: list[AudioTrack], encoded: bool) -> list[
 def get_cmd_encode_movie_pass_1(
     input_file: Path,
     passlog_file: Path,
+    codec: str,
     video_bitrate: int,
     video_filters: list[str],
 ) -> list[str]:
+    video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_1,
-        {VIDEO_ARGS: _video_args(video_filters)},
+        {
+            VIDEO_ARGS: _video_args(video_filters),
+            VIDEO_CODEC_ARGS: _render(video_codec.pass_1, passlog_file=passlog_file.absolute()),
+        },
         input_file=input_file.absolute(),
-        passlog_file=passlog_file.absolute(),
+        encoder=video_codec.encoder,
+        pix_fmt=video_codec.pix_fmts[0],
         video_bitrate=video_bitrate,
     )
 
@@ -323,16 +428,23 @@ def get_cmd_encode_movie_pass_2(
     input_file: Path,
     output_file: Path,
     passlog_file: Path,
+    codec: str,
     video_bitrate: int,
     video_filters: list[str],
     audio_tracks: list[AudioTrack],
 ) -> list[str]:
+    video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_2,
-        {VIDEO_ARGS: _video_args(video_filters), AUDIO_ARGS: _audio_encode_args(audio_tracks)},
+        {
+            VIDEO_ARGS: _video_args(video_filters),
+            VIDEO_CODEC_ARGS: _render(video_codec.pass_2, passlog_file=passlog_file.absolute()),
+            AUDIO_ARGS: _audio_encode_args(audio_tracks),
+        },
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
-        passlog_file=passlog_file.absolute(),
+        encoder=video_codec.encoder,
+        pix_fmt=video_codec.pix_fmts[0],
         video_bitrate=video_bitrate,
     )
 

@@ -227,7 +227,7 @@ class TestGetFileInfo:
     def test_dub_is_not_special(self, media_file):
         assert self._info(media_file, audio_disposition={"dub": 1, "default": 1}).audio_streams[0].special is False
 
-    def test_video_geometry_and_colour_extracted(self, media_file):
+    def test_video_geometry_and_color_extracted(self, media_file):
         video = self._info(
             media_file,
             video_width=3840,
@@ -396,6 +396,14 @@ class TestEncoderProcess:
         self._process(Encoder(), info, media_file, encode={"return_value": False})
         assert not [m for m in caplog.messages if m.startswith(("Processing '", "Video:", "Audio:"))]
 
+    def test_unsupported_target_video_codec_is_never_encoded(self, media_file, special_dirs, location_config):
+        location_config.target_video_codec = "vp9"
+        info = self._file_info(media_file, video_shall_encode=True)
+        result, mock_encode, _, mock_archive, _ = self._process(Encoder(), info, media_file)
+        assert result is False
+        mock_encode.assert_not_called()
+        mock_archive.assert_not_called()
+
     def test_invalid_file_is_never_archived(self, media_file, special_dirs):
         info = FileInfo(media_file, is_valid=False)
         result, encode, optimize, archive, cleanup = self._process(Encoder(), info, media_file)
@@ -561,6 +569,18 @@ class TestVideoEncodeDecision:
     def test_encoded_when_10_bit(self, media_file):
         assert self._video(media_file, video_pix_fmt="yuv420p10le").shall_encode is True
 
+    def test_10_bit_hevc_copied_when_allowed(self, media_file, location_config):
+        location_config.allowed_video_codecs = ["h264", "hevc"]
+        video = self._video(media_file, video_codec="hevc", video_bitrate=1_500_000, video_pix_fmt="yuv420p10le")
+        assert video.shall_encode is False
+
+    def test_hdr_hevc_encoded_even_when_allowed(self, media_file, location_config):
+        location_config.allowed_video_codecs = ["h264", "hevc"]
+        video = self._video(
+            media_file, video_codec="hevc", video_pix_fmt="yuv420p10le", video_color_transfer="smpte2084"
+        )
+        assert video.shall_encode is True
+
     def test_encoded_when_taller_than_the_limit(self, media_file):
         assert self._video(media_file, video_width=3840, video_height=2160).shall_encode is True
 
@@ -697,7 +717,7 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[3] == 2250
+        assert mock_cmd.call_args.args[4] == 2250
 
     def test_video_bitrate_never_upscaled(self, media_file, special_dirs, location_config):
         location_config.target_video_bitrate = 2250
@@ -707,7 +727,7 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[3] == 800
+        assert mock_cmd.call_args.args[4] == 800
 
     @pytest.mark.parametrize("video_bitrate,expected", [(1300, 1950), (5000, 2250), (0, 2250)])
     def test_video_bitrate_capped_as_h264_equivalent(
@@ -720,7 +740,22 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[3] == expected
+        assert mock_cmd.call_args.args[4] == expected
+
+    @pytest.mark.parametrize("video_codec,video_bitrate,expected", [("h264", 3000, 2000), ("hevc", 1500, 1500)])
+    def test_video_bitrate_capped_in_target_codec_terms(
+        self, media_file, special_dirs, location_config, video_codec, video_bitrate, expected
+    ):
+        location_config.target_video_codec = "hevc"
+        location_config.target_video_bitrate = 2250
+        encoder = self._encoder(media_file, video_codec=video_codec, video_bitrate=video_bitrate)
+        with (
+            patch("baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock(), make_popen_mock()]),
+            patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
+        ):
+            encoder._encode()
+        assert mock_cmd.call_args.args[3] == "hevc"
+        assert mock_cmd.call_args.args[4] == expected
 
     def test_passes_the_selected_audio_tracks(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
@@ -729,7 +764,7 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[5] == encoder._processing_file.audio_tracks
+        assert mock_cmd.call_args.args[6] == encoder._processing_file.audio_tracks
 
     def test_unknown_source_video_bitrate_falls_back_to_target(self, media_file, special_dirs, location_config):
         location_config.target_video_bitrate = 2250
@@ -739,7 +774,7 @@ class TestEncoderEncode:
             patch("baycone.encoding.ffmpeg.get_cmd_encode_movie_pass_2", return_value=["ffmpeg"]) as mock_cmd,
         ):
             encoder._encode()
-        assert mock_cmd.call_args.args[3] == 2250
+        assert mock_cmd.call_args.args[4] == 2250
 
     def test_copies_video_when_only_audio_needs_encoding(self, media_file, special_dirs):
         encoder = self._encoder(media_file, encode_video=False)

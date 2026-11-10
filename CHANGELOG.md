@@ -1,10 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-11-10
+
+### Changed
+
+- Update the Docker image to Python 3.14.10
+
+### Added
+
+- Add `hevc` as `target_video_codec`, encoded by `libx265` in 10-bit Main10 and tagged `hvc1` for Apple players
+- Keep 10-bit SDR HEVC sources as they are when `hevc` is in `allowed_video_codecs` and within the limits
+
+### Fixed
+
+- Let x264 choose the h264 level, so encodes above 1080p are no longer mislabeled as level 4.1
+- Skip a file with an unsupported `target_video_codec` instead of silently encoding it to h264
+
 ## [0.4.0] - 2026-10-11
 
 ### Changed
 
-- **Breaking:** Mount the config directory in Docker (`./config:/config:ro`); move `config.yml` into a `config/` directory
+- **Breaking:** Mount the config directory in Docker (`./config:/config:ro`); move `config.yml` into a `config/`
+  directory
 - Compare and cap source bitrates as their h264 or aac equivalent, so HEVC, AV1, VP9 and Opus sources keep their quality
 
 ### Added
@@ -62,9 +79,10 @@ _Initial release._
 - Add lock detection so files that are still being copied in are picked up only once they are stable
 - Add standalone CLI (`bin/baycone`) with `--optimize`, `--info` and progress output
 - Add Docker image (multi-stage `uv` build on `python:3.14-slim` with `ffmpeg`)
-- Add PlantUML architecture and behaviour diagrams in `docs/`
+- Add PlantUML architecture and behavior diagrams in `docs/`
 - Add MIT license
 
+[0.5.0]: https://github.com/theobaldik/baycone/releases/tag/v0.5.0
 [0.4.0]: https://github.com/theobaldik/baycone/releases/tag/v0.4.0
 [0.3.0]: https://github.com/theobaldik/baycone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/theobaldik/baycone/releases/tag/v0.2.0

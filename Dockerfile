@@ -2,10 +2,10 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
 # Base images are pinned to a patch version *and* a multi-arch index digest, so
 # a rebuild produces the same image on any host and architecture.
-FROM python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910 AS builder
+FROM python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS builder
 
 # Install uv — pinned to the version that maintains uv.lock (see AGENTS.md)
-COPY --from=ghcr.io/astral-sh/uv:0.9.21@sha256:15f68a476b768083505fe1dbfcc998344d0135f0ca1b8465c4760b323904f05a /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ COPY baycone/ ./baycone/
 RUN uv sync --frozen --no-dev
 
 # ── Final stage ───────────────────────────────────────────────────────────────
-FROM python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910
+FROM python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 
 # `licenses` describes the whole image, not just Baycone: the bundled Debian
 # ffmpeg is GPL. See /usr/share/doc/baycone/NOTICE inside the image.
