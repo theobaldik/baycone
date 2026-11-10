@@ -1,6 +1,10 @@
 # Baycone
 
 [![GitHub](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/theobaldik/baycone)
+[![Tests](https://github.com/theobaldik/baycone/actions/workflows/tests.yml/badge.svg)](https://github.com/theobaldik/baycone/actions/workflows/tests.yml)
+[![Version](https://img.shields.io/docker/v/theobaldik/baycone?sort=semver&logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone/tags)
+[![Image Size](https://img.shields.io/docker/image-size/theobaldik/baycone/latest?logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone/tags)
+[![License](https://img.shields.io/github/license/theobaldik/baycone)](https://github.com/theobaldik/baycone/blob/master/LICENSE)
 
 **Media pipeline for self-hosted libraries.**
 

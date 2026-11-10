@@ -1,5 +1,12 @@
 # Baycone
 
+[![Tests](https://github.com/theobaldik/baycone/actions/workflows/tests.yml/badge.svg)](https://github.com/theobaldik/baycone/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/theobaldik/baycone)](https://github.com/theobaldik/baycone/releases)
+[![Docker Pulls](https://img.shields.io/docker/pulls/theobaldik/baycone?logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone)
+[![Image Size](https://img.shields.io/docker/image-size/theobaldik/baycone/latest?logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone)
+[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/theobaldik/baycone)](LICENSE)
+
 **Media pipeline for self-hosted libraries**
 
 Baycone watches one or more media directories for new video files and automatically transcodes them with
