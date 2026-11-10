@@ -207,6 +207,7 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
 
 CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "{ffmpeg}",
+    "-y",
     "-hide_banner",
     "-v",
     "error",
@@ -349,15 +350,16 @@ CMD_FFPROBE = [
     "{input_file}",
 ]
 
-# A single packet near the declared end; an aborted copy keeps the full-length header but lacks the data
+# Every packet from `start` to the end; an aborted copy keeps the full-length header but lacks the data.
+# Fixed-point, ffprobe refuses the exponent form a tiny float is printed in
 CMD_FFPROBE_TAIL = [
     "{ffprobe}",
     "-v",
     "error",
     "-read_intervals",
-    "{start}%+#1",
+    "{start:.3f}%",
     "-show_entries",
-    "packet=pts_time",
+    "packet=pts_time,dts_time",
     "-print_format",
     "json",
     "{input_file}",

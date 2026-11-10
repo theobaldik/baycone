@@ -4,6 +4,7 @@ import sys
 import argparse
 import subprocess
 from argparse import Namespace
+from contextlib import suppress
 from pathlib import Path
 
 from baycone import ffmpeg
@@ -13,11 +14,9 @@ from baycone.config import Constants
 EXT_PROCESSED = ".mp4"
 
 
-# region Directories and files
-
-
 def get_dir_temp(input_file: Path) -> Path:
-    return input_file.parent / Constants.DIR_TEMP
+    """A directory of the CLI's own: `.baycone` itself holds the state and work files of a running service."""
+    return input_file.parent / Constants.DIR_TEMP / "cli"
 
 
 def get_dir_processed(input_file: Path) -> Path:
@@ -41,7 +40,7 @@ def prepare_dirs(input_file: Path, include_temp: bool) -> None:
         temp_dir = get_dir_temp(input_file)
         if temp_dir.is_dir():
             shutil.rmtree(temp_dir)
-        temp_dir.mkdir()
+        temp_dir.mkdir(parents=True)
 
     processed_dir = get_dir_processed(input_file)
 
@@ -53,11 +52,9 @@ def clear_dirs(input_file: Path) -> None:
     temp_dir = get_dir_temp(input_file)
     if temp_dir.is_dir():
         shutil.rmtree(temp_dir)
-
-
-# endregion Directories and files
-
-# region Transcoding
+    # Gone only when nothing else lives in it, `rmdir` never removes content
+    with suppress(OSError):
+        temp_dir.parent.rmdir()
 
 
 def get_file_info(file_path: Path) -> dict:
@@ -111,12 +108,6 @@ def optimize(
 ) -> None:
     cmd = ffmpeg.get_cmd_optimize(input_file, output_file, audio_tracks, encoded)
     run_process(cmd, duration, "Optimizing: {percent:.2f} %")
-
-
-# endregion Transcoding
-
-
-# region Application
 
 
 def cli() -> Namespace:
@@ -206,8 +197,6 @@ def main() -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
-
-# endregion Application
 
 if __name__ == "__main__":
     sys.exit(main())

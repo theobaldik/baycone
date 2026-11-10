@@ -202,6 +202,18 @@ class TestReloadConfig:
         assert [lc.path for lc in config.locations] == ["movies"]
         assert service._watchers is watchers
 
+    def test_location_that_cannot_be_set_up_keeps_the_previous_config(self, service, config_file):
+        """The config used to be swapped before the watchers were built, leaving the two out of step."""
+        watchers = service._watchers
+        defaults = config.defaults
+        config_file.write_text("defaults:\n  target_video_bitrate: 777\nlocations:\n  - path: shows\n")
+        bump_mtime(config_file)
+        with patch("baycone.__main__.DirWatcher", side_effect=PermissionError("read-only")):
+            service._reload_config()
+        assert [lc.path for lc in config.locations] == ["movies"]
+        assert config.defaults is defaults
+        assert service._watchers is watchers
+
     def test_invalid_file_keeps_the_previous_config(self, service, config_file):
         watchers = service._watchers
         config_file.write_text("locations: [\n")

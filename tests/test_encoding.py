@@ -1,3 +1,4 @@
+import itertools
 import json
 import subprocess
 import threading
@@ -167,23 +168,42 @@ class TestGetFfprobeResult:
 
 
 class TestIsComplete:
+    """Declared duration 3600 s; a complete file has data in its last 30 s."""
+
     def _check(self, media_file: Path, packets: list[dict], start_time: float = 0.0) -> tuple[bool, list[str]]:
         stdout = json.dumps({"packets": packets})
         with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stdout=stdout)) as run:
             complete = Analyzer._is_complete(media_file, start_time, 3600.0)
         return complete, run.call_args.args[0]
 
-    def test_complete_when_a_packet_is_near_the_end(self, media_file):
-        assert self._check(media_file, [{"pts_time": "3575.5"}])[0] is True
-
-    def test_tolerates_seek_landing_a_gop_early(self, media_file):
-        assert self._check(media_file, [{"pts_time": "3560.0"}])[0] is True
+    def test_complete_when_data_reaches_the_end(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3570.0"}, {"pts_time": "3599.9"}])[0] is True
 
     def test_truncated_when_data_ends_early(self, media_file):
-        assert self._check(media_file, [{"pts_time": "1800.0"}])[0] is False
+        assert self._check(media_file, [{"pts_time": "1799.0"}, {"pts_time": "1800.0"}])[0] is False
+
+    def test_truncated_just_short_of_the_tail(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3569.9"}])[0] is False
 
     def test_truncated_without_packets(self, media_file):
         assert self._check(media_file, [])[0] is False
+
+    def test_latest_packet_counts_not_the_first(self, media_file):
+        """The seek lands on the keyframe before its target, with a long GOP far before it."""
+        assert self._check(media_file, [{"pts_time": "0.0"}, {"pts_time": "3599.9"}])[0] is True
+
+    def test_packets_are_not_expected_in_order(self, media_file):
+        assert self._check(media_file, [{"pts_time": "3599.9"}, {"pts_time": "3590.0"}])[0] is True
+
+    def test_dts_is_used_where_there_is_no_pts(self, media_file):
+        """AVI: every complete file used to be rejected."""
+        assert self._check(media_file, [{"dts_time": "3570.0"}, {"dts_time": "3599.9"}])[0] is True
+
+    def test_truncated_by_dts(self, media_file):
+        assert self._check(media_file, [{"dts_time": "1800.0"}])[0] is False
+
+    def test_packets_without_any_timestamp_cannot_be_judged(self, media_file):
+        assert self._check(media_file, [{}, {}])[0] is True
 
     def test_truncated_when_probe_fails(self, media_file):
         with patch("baycone.encoding.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffprobe")):
@@ -194,12 +214,19 @@ class TestIsComplete:
             assert Analyzer._is_complete(media_file, 0.0, 3600.0) is False
 
     def test_seeks_relative_to_start_time(self, media_file):
-        complete, cmd = self._check(media_file, [{"pts_time": "4575.5"}], start_time=1000.0)
+        complete, cmd = self._check(media_file, [{"pts_time": "4599.9"}], start_time=1000.0)
         assert complete is True
-        assert "4570.0%+#1" in cmd
+        assert "4570.000%" in cmd
 
     def test_early_data_with_start_time_is_truncated(self, media_file):
-        assert self._check(media_file, [{"pts_time": "3575.5"}], start_time=1000.0)[0] is False
+        assert self._check(media_file, [{"pts_time": "3599.9"}], start_time=1000.0)[0] is False
+
+    def test_short_file_is_read_from_its_start(self, media_file):
+        with patch(
+            "baycone.encoding.subprocess.run", return_value=MagicMock(stdout='{"packets": [{"pts_time": "9.9"}]}')
+        ) as run:
+            assert Analyzer._is_complete(media_file, 0.0, 10.0) is True
+        assert "0.000%" in run.call_args.args[0]
 
 
 class TestGetFileInfo:
@@ -1333,31 +1360,50 @@ class TestStallWatchdog:
         with patch("baycone.encoding.subprocess.Popen", return_value=self._hanging_process()):
             assert encoder._optimize(encoded=False) is False
 
+    def _watch(self, encoder: Encoder, output: Path | None, between_checks) -> MagicMock:
+        """Six checks 20 s apart on a fake clock, against a stall limit of 50 s; no real time passes."""
+        process, done = MagicMock(), MagicMock()
+
+        def wait(timeout):
+            between_checks()
+            return done.wait.call_count > 6
+
+        done.wait.side_effect = wait
+        with (
+            patch("baycone.encoding.STALL_SECONDS", 50.0),
+            patch("baycone.encoding.time.monotonic", side_effect=itertools.count(0, 20)),
+        ):
+            encoder._kill_when_stalled(process, output, done)
+        return process
+
+    def test_no_progress_is_a_stall(self, media_file, special_dirs):
+        encoder = self._encoder(media_file)
+        process = self._watch(encoder, None, lambda: None)
+        process.kill.assert_called_once()
+        assert encoder._stalled is True
+
     def test_advancing_progress_keeps_ffmpeg_alive(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
-        process, done = MagicMock(), threading.Event()
-        watchdog = threading.Thread(target=encoder._kill_when_stalled, args=(process, None, done))
-        watchdog.start()
-        for out_time in range(1, 30):
-            encoder._out_time = out_time
-            done.wait(0.01)
-        done.set()
-        watchdog.join()
-        process.kill.assert_not_called()
+
+        def advance():
+            encoder._out_time += 1
+
+        self._watch(encoder, None, advance).kill.assert_not_called()
 
     def test_growing_output_keeps_ffmpeg_alive(self, media_file, special_dirs):
         """Moving the index to the front rewrites the file without reporting any progress."""
-        encoder = self._encoder(media_file)
         output = special_dirs.optimized_dir / "movie.mp4"
-        process, done = MagicMock(), threading.Event()
-        watchdog = threading.Thread(target=encoder._kill_when_stalled, args=(process, output, done))
-        watchdog.start()
-        for size in range(1, 30):
-            output.write_bytes(b"x" * size)
-            done.wait(0.01)
-        done.set()
-        watchdog.join()
-        process.kill.assert_not_called()
+
+        def grow():
+            with output.open("ab") as file:
+                file.write(b"x")
+
+        self._watch(self._encoder(media_file), output, grow).kill.assert_not_called()
+
+    def test_output_that_stopped_growing_is_a_stall(self, media_file, special_dirs):
+        output = special_dirs.optimized_dir / "movie.mp4"
+        output.write_bytes(b"x")
+        self._watch(self._encoder(media_file), output, lambda: None).kill.assert_called_once()
 
     def test_finished_ffmpeg_is_not_reported_as_stalled(self, media_file, special_dirs):
         encoder = self._encoder(media_file)
@@ -1443,16 +1489,15 @@ class TestFirstPassResume:
     def test_stats_are_synced_before_the_marker_is_written(self, media_file, special_dirs):
         synced = []
 
-        def first_pass(cmd, **kwargs):
-            if not synced and not (special_dirs.passlog_dir / "passlog-0.log").exists():
-                (special_dirs.passlog_dir / "passlog-0.log").touch()
+        def ffmpeg_writing_stats(cmd, **kwargs):
+            (special_dirs.passlog_dir / "passlog-0.log").touch()
             return make_popen_mock()
 
         def record(path):
             synced.append((path.name, (special_dirs.passlog_dir / "pass1.json").exists()))
 
         with (
-            patch("baycone.encoding.subprocess.Popen", side_effect=first_pass),
+            patch("baycone.encoding.subprocess.Popen", side_effect=ffmpeg_writing_stats),
             patch("baycone.encoding.fsync", side_effect=record),
         ):
             self._encoder(media_file)._encode()

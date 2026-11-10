@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from baycone import cli
+from baycone.config import Constants
 
 PROBE_STEREO = {
     "format": {"duration": "10"},
@@ -53,4 +54,28 @@ class TestMain:
 
         code, _ = run_cli(media_file, PROBE_STEREO, run_process=fail)
         assert code == 2
+        assert not cli.get_dir_temp(media_file).exists()
+
+    def test_leaves_no_temp_dir_behind(self, media_file):
+        run_cli(media_file, PROBE_STEREO)
+        assert not (media_file.parent / Constants.DIR_TEMP).exists()
+
+    @pytest.mark.parametrize("fails", [False, True], ids=["success", "failure"])
+    def test_keeps_the_files_of_a_service_watching_the_directory(self, media_file, fails):
+        """Its temp dir used to be `.baycone` itself, wiped before and after every run."""
+        kept = [
+            media_file.parent / Constants.FILE_CONFIG_OVERRIDE,
+            media_file.parent / Constants.FILE_STATE,
+            media_file.parent / Constants.DIR_PASSLOG / "passlog-0.log",
+        ]
+        for file_path in kept:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text("service")
+
+        def fail(cmd, *args):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        run_cli(media_file, PROBE_STEREO, run_process=fail if fails else None)
+
+        assert all(file_path.read_text() == "service" for file_path in kept)
         assert not cli.get_dir_temp(media_file).exists()

@@ -33,7 +33,7 @@ H264_EFFICIENCY: dict[str, float] = {"hevc": 1.5, "av1": 2.0, "vp9": 1.5, "mpeg4
 
 CROP_PATTERN = re.compile(r"crop=\d+:(\d+):\d+:(\d+)")
 
-# The seek may land a whole GOP before its target, so data is expected within twice this of the declared end
+# A complete file has data within this of its declared end
 TAIL_SECONDS: float = 30.0
 
 # ffmpeg is killed once neither its progress nor its output file has moved for this long
@@ -65,6 +65,16 @@ def _parse_number(value: object) -> float:
         return 0.0
 
 
+def _language(stream: dict) -> str:
+    tags = stream.get("tags", {})
+    return normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", ""))
+
+
+def _is_special(stream: dict) -> bool:
+    disposition = stream.get("disposition", {})
+    return any(disposition.get(name) for name in SPECIAL_DISPOSITIONS)
+
+
 @dataclass
 class VideoStream:
     shall_encode: bool = False
@@ -87,7 +97,7 @@ class VideoStream:
 
 
 class FileInfo:
-    def __init__(self, file_path: Path, **kwargs):
+    def __init__(self, file_path: Path, **kwargs) -> None:
         self._file_path: Path = None
         self._special_dirs: SpecialDirs = None
         self._location_config: LocationConfig = None
@@ -184,16 +194,9 @@ class Analyzer:
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             log.error(f"FFprobe command failed for {file_path}: {e.stderr}")
-            return None
-        except subprocess.TimeoutExpired:
-            log.error(f"FFprobe timeout for {file_path}")
-            return None
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            log.error(f"Error parsing ffprobe output for {file_path}: {e}")
-            return None
         except Exception as e:
-            log.error(f"Unexpected error during ffprobe for {file_path}: {e}")
-            return None
+            log.error(f"FFprobe failed for {file_path}: {e}")
+        return None
 
     @staticmethod
     def _is_complete(file_path: Path, start_time: float, duration: float) -> bool:
@@ -209,8 +212,13 @@ class Analyzer:
             log.error(f"Checking the end of '{file_path}' failed: {e}")
             return False
 
-        last = _parse_number(packets[0].get("pts_time")) if packets else start_time
-        if last < end - 2 * TAIL_SECONDS:
+        # AVI packets carry no pts; the latest of all, as the seek lands on the keyframe before its target
+        times = [_parse_number(p.get(key)) for p in packets for key in ("pts_time", "dts_time") if key in p]
+        if packets and not times:
+            return True
+
+        last = max(times, default=start_time)
+        if last < end - TAIL_SECONDS:
             log.warning(
                 f"'{file_path}' looks truncated: data ends near {_format_duration(last - start_time)},"
                 f" the header declares {_format_duration(duration)}"
@@ -266,25 +274,20 @@ class Analyzer:
             if audio_stream.channels > 0:
                 audio_stream.channel_bitrate = Analyzer._get_bitrate(stream) // audio_stream.channels
 
-            tags = stream.get("tags", {})
-            audio_stream.lang = normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", ""))
-
-            disposition = stream.get("disposition", {})
-            audio_stream.original = bool(disposition.get("original"))
-            audio_stream.special = any(disposition.get(name) for name in SPECIAL_DISPOSITIONS)
+            audio_stream.lang = _language(stream)
+            audio_stream.original = bool(stream.get("disposition", {}).get("original"))
+            audio_stream.special = _is_special(stream)
 
             file_info.audio_streams.append(audio_stream)
 
         subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
         for index, stream in enumerate(subtitle_streams):
-            tags = stream.get("tags", {})
-            disposition = stream.get("disposition", {})
             file_info.subtitle_streams.append(
                 SubtitleStream(
                     index=index,
                     codec=stream.get("codec_name", ""),
-                    lang=normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", "")),
-                    special=any(disposition.get(name) for name in SPECIAL_DISPOSITIONS),
+                    lang=_language(stream),
+                    special=_is_special(stream),
                 )
             )
 
@@ -352,7 +355,7 @@ class Analyzer:
 
 class Encoder:
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._processing_file: FileInfo | None = None
         self._signature: Signature | None = None
 
@@ -425,7 +428,7 @@ class Encoder:
 
         # Two-pass encoding hits its bitrate, anything copied is as large as it is in the source
         if file_info.video_stream.shall_encode and file_info.duration:
-            audio = sum(t.bitrate or t.stream.channel_bitrate * t.stream.channels for t in file_info.audio_tracks)
+            audio = sum(t.bitrate or t.stream.overall_bitrate for t in file_info.audio_tracks)
             size = (self._target_video_bitrate() + audio) * 125 * file_info.duration
 
         return size * 2 if shall_encode else size
@@ -517,11 +520,12 @@ class Encoder:
         for line in process.stdout:
             key, _, value = line.strip().partition("=")
 
-            if key == "out_time_us" and value.isdigit():
-                self._out_time = int(value)
+            if key != "out_time_us" or not value.isdigit():
+                continue
+            self._out_time = int(value)
 
-            if duration and key == "out_time_us" and value.isdigit():
-                out_percent = int(value) / 10_000 / duration
+            if duration:
+                out_percent = self._out_time / 10_000 / duration
                 if out_percent >= percent + 10:
                     percent = int(out_percent // 10) * 10
                     eta = (time.monotonic() - started) * max(100 - out_percent, 0) / out_percent
@@ -577,7 +581,6 @@ class Encoder:
         video_filters = list(self._video_filters().values())
 
         file_info.encoding_path.parent.mkdir(parents=True, exist_ok=True)
-        file_info.encoding_path.unlink(missing_ok=True)
 
         try:
             if file_info.video_stream.shall_encode:
@@ -609,7 +612,6 @@ class Encoder:
                     log.warning(
                         f"2nd pass failed on the first pass kept from an earlier run, starting over: {e.stderr}"
                     )
-                    file_info.encoding_path.unlink(missing_ok=True)
                     self._first_pass(pass_1)
                     self._run_ffmpeg(pass_2, "Encoding 2nd pass", file_info.encoding_path)
 
@@ -632,11 +634,10 @@ class Encoder:
 
     def _is_first_pass_done(self, cmd: list[str]) -> bool:
         try:
-            return json.loads(
-                self._processing_file.first_pass_path.read_text(encoding="utf-8")
-            ) == self._first_pass_key(cmd)
+            marker = json.loads(self._processing_file.first_pass_path.read_text(encoding="utf-8"))
         except OSError, ValueError:
             return False
+        return marker == self._first_pass_key(cmd)
 
     def _first_pass(self, cmd: list[str]) -> None:
         file_info = self._processing_file

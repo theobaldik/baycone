@@ -52,7 +52,6 @@ class Constants:
     DIR_ORIGINALS = Path("_baycone_originals")
     DIR_PROCESSED = Path("_baycone_processed")
 
-    SPECIAL_DIRS = (DIR_TEMP, DIR_PASSLOG, DIR_ENCODED, DIR_OPTIMIZED, DIR_ORIGINALS, DIR_PROCESSED)
     FILE_CONFIG_OVERRIDE = DIR_TEMP / "config.override.yml"
     FILE_STATE = DIR_TEMP / "state.json"
 

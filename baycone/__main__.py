@@ -2,6 +2,7 @@ import logging
 import signal
 import sys
 import time
+from dataclasses import fields
 from pathlib import Path
 from types import FrameType
 
@@ -23,8 +24,15 @@ class Service:
         self._config_file: FileChangeTracker | None = None
 
     def _load_config(self) -> None:
-        config.load_config(self._config_file.file_path)
-        self._watchers = [DirWatcher(lc) for lc in config.config.locations]
+        """All or nothing: a location whose watcher cannot be set up leaves the previous config in place."""
+        previous = {f.name: getattr(config.config, f.name) for f in fields(config.config)}
+        try:
+            config.load_config(self._config_file.file_path)
+            self._watchers = [DirWatcher(lc) for lc in config.config.locations]
+        except Exception:
+            for name, value in previous.items():
+                setattr(config.config, name, value)
+            raise
 
     def _reload_config(self) -> None:
         """A failed reload keeps the previous config; it is retried once the file changes again."""

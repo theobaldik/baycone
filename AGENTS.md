@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (437 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (452 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -54,7 +54,9 @@ Two tests guard against past data-loss/logic bugs — keep them:
   Extracted by `Encoder._extract_subtitles()` after optimize; a failure there only warns
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` data class. A file is
   invalid when no packet lies near its declared end (`Analyzer._is_complete`, one seek, no decode): an aborted copy
-  keeps the full-length header, and its size and mtime are as stable as a finished one's
+  keeps the full-length header, and its size and mtime are as stable as a finished one's. It reads every packet from
+  the seek position on and takes the latest pts *or* dts — AVI has no pts, and the seek lands on the keyframe before
+  its target, so the first packet alone says nothing
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from `config.ffmpeg_path` /
   `config.ffprobe_path`. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` /
@@ -75,7 +77,8 @@ Two tests guard against past data-loss/logic bugs — keep them:
   until they change or `retry_failed()` is called (config or override reload). `pause()` holds a location back for
   `PAUSE_SECONDS` without failing anything.
 - `baycone/cli.py` — Standalone CLI entry point (separate from service mode), uses `argparse`. Imports
-  `from baycone import ffmpeg` — there is no third-party `ffmpeg` dependency.
+  `from baycone import ffmpeg` — there is no third-party `ffmpeg` dependency. Its temp files live in `.baycone/cli/`
+  and only that is removed: `.baycone/` itself may hold a running service's state, override and work files.
 
 **`Encoder.process()` invariant:** the original file is moved to `_baycone_originals/` only after both encoding and
 optimizing succeeded. On any failure it stays put, `process()` returns `False` and the watcher skips it until the file
@@ -154,7 +157,8 @@ Only git refs carry the `v` prefix — the same version is written differently p
 `project.version` in `pyproject.toml` is the single source of truth. Never edit a version by hand — `bump-my-version`
 rewrites it together with every copy listed under `[tool.bumpversion.files]` (`uv.lock`, `compose.yml`, the `image:`
 lines in `README.md` and `docs/dockerhub-overview.md`). A new file that pins the release version must be added there.
-It neither commits nor tags — update `CHANGELOG.md`, commit, then tag `v<version>` by hand.
+It neither commits nor tags — rename `## [Unreleased]` in `CHANGELOG.md` to the version, commit, then tag
+`v<version>` by hand.
 
 Image tags are declared in `compose.yml` under `build.tags` — always fully qualified as `theobaldik/baycone:...`, never
 a bare `baycone:...` (a bare name resolves to `docker.io/library/`, which cannot be pushed). The GitLab registry is deprecated and no longer published to.
@@ -185,7 +189,9 @@ For example, with `v1.2.0` released: a fix for `1.1.0` goes to `support/v1.1.x`,
   version as a reference-style link to the matching tag:
   `[0.1.0]: https://github.com/<owner>/baycone/releases/tag/v0.1.0`
 - Allowed groups, in exactly this order: `### Changed`, `### Added`, `### Removed`, `### Fixed`. Nothing else — no
-  `Deprecated`, no `Security` (deprecations go under `Changed`), no `Notes`, and never an `Unreleased` section
+  `Deprecated`, no `Security` (deprecations go under `Changed`), no `Notes`
+- Work that is not released yet is collected under `## [Unreleased]` at the top (a deliberate departure from Common
+  Changelog); at release the heading becomes the version and date
 - One line per entry, imperative present tense, self-describing without its heading ("Add `--optimize` flag", not
   "added optimize flag" or "optimize flag"), short and without commit references
 - Breaking changes are prefixed `**Breaking:**` and listed first within their group

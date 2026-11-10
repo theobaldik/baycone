@@ -233,7 +233,15 @@ class TestSpecialDirs:
         assert dirs.root_dir == locations_root / "movies"
 
     def test_iterates_all_special_dirs(self, tmp_path):
-        assert len(list(SpecialDirs(tmp_path))) == len(Constants.SPECIAL_DIRS)
+        dirs = SpecialDirs(tmp_path)
+        assert set(dirs) == {
+            dirs.temp_dir,
+            dirs.passlog_dir,
+            dirs.encoded_dir,
+            dirs.optimized_dir,
+            dirs.originals_dir,
+            dirs.processed_dir,
+        }
 
     def test_clear_workdirs_empties_the_intermediate_files_only(self, tmp_path):
         dirs = SpecialDirs(tmp_path)

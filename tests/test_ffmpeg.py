@@ -70,8 +70,22 @@ class TestBinaryPaths:
 
 
 class TestCommandContent:
-    def test_ffprobe_tail_reads_one_packet_from_start(self):
-        assert value_of(ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0), "-read_intervals") == ["10.0%+#1"]
+    def test_ffprobe_tail_reads_from_start_to_the_end(self):
+        assert value_of(ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0), "-read_intervals") == ["10.000%"]
+
+    def test_ffprobe_tail_asks_for_both_timestamps(self):
+        """AVI packets have no pts."""
+        assert value_of(ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0), "-show_entries") == ["packet=pts_time,dts_time"]
+
+    def test_ffprobe_tail_never_uses_the_exponent_form(self):
+        """`1e-05%` is refused by ffprobe, and the complete file with it."""
+        assert value_of(ffmpeg.get_cmd_ffprobe_tail(INPUT, 0.00001), "-read_intervals") == ["0.000%"]
+
+    def test_every_command_writing_a_file_overwrites_it(self):
+        """Without `-y` ffmpeg asks, and a leftover of an interrupted run fails the file."""
+        writing = [cmd for cmd in all_commands() if cmd[-1] == str(OUTPUT.absolute())]
+        assert len(writing) == 5
+        assert all("-y" in cmd for cmd in writing)
 
     def test_pass_1_discards_audio_and_output(self):
         cmd = ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [])

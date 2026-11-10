@@ -7,6 +7,7 @@
 - Remember failed files across restarts and retry them once the file changes or the configuration is reloaded
 - Reject configuration values of the wrong type when loading, instead of failing later during a run
 - Restart the container automatically and rotate its logs in the Compose setup
+- Ignore a `config.override.yml` that sets `path`, which is fixed once the location is watched
 
 ### Added
 
@@ -22,9 +23,12 @@
 - Move a finished file into `_baycone_processed/` in one step, so a crash or power loss never leaves a broken one there
 - Discard the result when the source file changes or disappears while it is processed
 - Keep the service running when a `config.override.yml` is not a mapping, not UTF-8 or holds a wrongly typed value
+- Keep the service running after an unexpected error in the main loop
 - Fix two-pass hevc encodes of files with a `:` in their name
 - Stop a location nested in another one from processing that location's originals and outputs again
 - Remove work files left behind by a crash when the service starts
+- Stop the standalone CLI from deleting a watched location's `.baycone/` directory, including its override file
+- Keep the previous configuration as a whole when a reloaded one names a location that cannot be set up
 
 ## [0.5.1] - 2026-11-10
 
