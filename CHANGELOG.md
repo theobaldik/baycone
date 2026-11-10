@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1] - 2026-11-10
+
+### Changed
+
+- Harden the Compose setup: no network, read-only root filesystem, all capabilities dropped and no privilege
+  escalation, limiting what a malicious media file could do through an ffmpeg vulnerability
+
+### Removed
+
+- Remove `pip` from the Docker image, which is unused at runtime and bundled vulnerable copies of `urllib3`, `msgpack`
+  and `setuptools`
+
 ## [0.5.0] - 2026-11-10
 
 ### Changed
@@ -82,6 +94,7 @@ _Initial release._
 - Add PlantUML architecture and behavior diagrams in `docs/`
 - Add MIT license
 
+[0.5.1]: https://github.com/theobaldik/baycone/releases/tag/v0.5.1
 [0.5.0]: https://github.com/theobaldik/baycone/releases/tag/v0.5.0
 [0.4.0]: https://github.com/theobaldik/baycone/releases/tag/v0.4.0
 [0.3.0]: https://github.com/theobaldik/baycone/releases/tag/v0.3.0

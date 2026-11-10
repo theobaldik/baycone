@@ -36,6 +36,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+# Baycone runs from the uv-built venv; the base image's pip is unused and bundles
+# its own copies of urllib3, msgpack and setuptools that scanners flag
+RUN pip uninstall -y pip
+
 WORKDIR /app
 
 # Bring in the virtual environment from the builder

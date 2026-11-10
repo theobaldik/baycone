@@ -22,8 +22,18 @@ Source, configuration reference and documentation: https://github.com/theobaldik
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.5.0
+    image: theobaldik/baycone:0.5.1
     user: "1000:1000"
+    # ffmpeg parses untrusted media: no network, no privilege escalation, and
+    # nothing writable beyond the mounts and the temp dir
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     volumes:
       - ./config:/config:ro
       - /your/movies:/locations/movies
