@@ -9,12 +9,12 @@ source = { virtual = "." }
 dependencies = [
     { name = "charset-normalizer" },
     { name = "colorlog" },
-    { name = "pycountry" },
     { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "pycountry" },
     { name = "pytest" },
 ]
 
@@ -22,12 +22,14 @@ dev = [
 requires-dist = [
     { name = "charset-normalizer", specifier = ">=3.5.2" },
     { name = "colorlog", specifier = ">=6.12.0" },
-    { name = "pycountry", specifier = ">=26.2.16" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+dev = [
+    { name = "pycountry", specifier = ">=26.2.16" },
+    { name = "pytest", specifier = ">=9.0.2" },
+]
 
 [[package]]
 name = "charset-normalizer"

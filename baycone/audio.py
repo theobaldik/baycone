@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
-import pycountry
-
 from baycone.config import LocationConfig
+from baycone.languages import BIBLIOGRAPHIC_TO_TERMINOLOGY
 
 UNDEFINED_LANGUAGE = "und"
 # Stands for the original track's language in `target_audio_languages`
@@ -36,8 +35,7 @@ AAC_EFFICIENCY: dict[str, float] = {"opus": 1.5, "vorbis": 1.1, "mp3": 0.75, "ac
 def normalize_language(code: str) -> str:
     code = code.strip().lower()
     # ISO 639-2/B and /T codes both occur in the wild, MP4 requires /T
-    language = pycountry.languages.get(bibliographic=code)
-    return (language.alpha_3 if language else code) or UNDEFINED_LANGUAGE
+    return BIBLIOGRAPHIC_TO_TERMINOLOGY.get(code, code) or UNDEFINED_LANGUAGE
 
 
 def cap_bitrate(source: int, target: int) -> int:

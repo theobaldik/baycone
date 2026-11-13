@@ -21,7 +21,7 @@
 
 ## Test status
 
-`uv run pytest` is green (452 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
+`uv run pytest` is green (453 tests). No real `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run`
 and `subprocess.Popen` are mocked.
 
 `tests/conftest.py` holds the shared fixtures. `Constants.DIR_LOCATIONS` is read from the environment at import time, so
@@ -126,7 +126,8 @@ logging.
 - `Config → DefaultsConfig → LocationConfig` hierarchy; every location inherits defaults and can override
   (`Config.from_dict` seeds each location with `defaults.to_dict()` before applying its own keys)
 - Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` (backed by
-  `pycountry`) before comparing
+  the built-in tables in `baycone/languages.py`; `pycountry` is a dev dependency that only verifies them) before
+  comparing
 - Special audio tracks (commentary, audio description, ...) are detected by ffprobe disposition only and always dropped;
   `dub` is not special
 - `FileInfo.file_path` setter auto-resolves `LocationConfig` and `SpecialDirs` from the global `config.locations`

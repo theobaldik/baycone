@@ -2,11 +2,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import pycountry
 from charset_normalizer import from_bytes
 
 from baycone.audio import normalize_language
 from baycone.config import LocationConfig
+from baycone.languages import ALPHA_3_TO_ALPHA_2
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +37,7 @@ def select_subtitle_streams(streams: list[SubtitleStream], location_config: Loca
 
 def language_suffix(lang: str) -> str:
     """ISO 639-1 where the language has one, otherwise the ISO 639-2 code as is."""
-    language = pycountry.languages.get(alpha_3=lang)
-    return getattr(language, "alpha_2", lang)
+    return ALPHA_3_TO_ALPHA_2.get(lang, lang)
 
 
 def ensure_utf8(path: Path) -> None:

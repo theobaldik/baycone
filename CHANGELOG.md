@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+
+- Drop the `pycountry` dependency, replaced by built-in ISO 639 language code tables
+
 ## [0.6.0] - 2026-11-11
 
 ### Changed
