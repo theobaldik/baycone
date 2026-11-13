@@ -267,7 +267,7 @@ BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run baycone-se
 decisions, audio track selection and crash-safe output. The input file is never moved or modified.
 
 ```bash
-uv tool install git+https://github.com/theobaldik/baycone   # or `bin/baycone` from a checkout
+pip install baycone          # or `uv tool install baycone`, or `bin/baycone` from a checkout
 
 baycone-cli movie.mkv                          # result in _baycone_processed/movie.mp4 next to the input
 baycone-cli movie.mkv --output /media/out.mp4
@@ -296,7 +296,7 @@ Exit codes: `0` success, `1` invalid arguments, `2` the file could not be proces
 The `baycone` package holds the pipeline without any service state, configuration file or environment variables:
 
 ```bash
-uv add "baycone @ git+https://github.com/theobaldik/baycone@v0.6.0"
+pip install baycone          # or `uv add baycone`
 ```
 
 ```python
@@ -357,6 +357,9 @@ go through a `feature/...` branch (prepended with the issue number where one exi
 Releases are tagged `v0.1.0` / `v1.0.0`, and fixes for a release older than the latest `major.minor` go on a
 `support/v1.1.x`-style branch instead of `master`. The `v` prefix belongs to git refs only — Docker image tags use the
 plain version (`theobaldik/baycone:0.1.0`, `:0.1`, `:latest`).
+
+The repository is a uv workspace: the library and the CLI (repo root) are published to PyPI as `baycone`, the service
+(`service/`) is published as the Docker image. Both share one version, one tag and one changelog.
 
 The version lives in [`pyproject.toml`](pyproject.toml) and is bumped everywhere it is repeated (lock file, compose
 image tags, docs) with [bump-my-version](https://github.com/callowayproject/bump-my-version):

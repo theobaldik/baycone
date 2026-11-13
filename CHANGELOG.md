@@ -8,12 +8,12 @@
 - **Breaking:** Rebuild `baycone-cli` on the service's pipeline, with new flags: `--output`, `--work-dir`,
   repeatable `-l` selecting audio languages, `--codec`, `--subtitles`, `--remux-only`, `--info` printing JSON,
   `--ffmpeg` and `--ffprobe`
-- Split the code into the `baycone` core library, the `baycone_cli` command and the `baycone_service` service
+- Split the code into the `baycone` library with its CLI, and the `baycone-service` package behind the Docker image
 
 ### Added
 
 - Add a Python API (`Encoder`, `Analyzer`, `Job`, `EncodingSettings`) to use the pipeline from other projects
-- Add the `baycone-cli` and `baycone-service` console scripts, installable with `uv tool install` or as a dependency
+- Package the library and the `baycone-cli` command for PyPI as `baycone`
 - Publish across filesystems by copying the finished file into place when a rename is not possible
 
 ### Removed

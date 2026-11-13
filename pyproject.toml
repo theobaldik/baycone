@@ -1,8 +1,8 @@
 [project]
 name = "baycone"
 version = "0.6.0"
-description = "Media pipeline for self-hosted libraries"
-readme = "README.md"
+description = "Transcode videos into streaming-friendly MP4 with ffmpeg, as a Python library or a command"
+readme = "docs/pypi-overview.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -12,24 +12,52 @@ maintainers = [
     { name = "theobaldik" },
 ]
 requires-python = ">=3.14"
+keywords = ["ffmpeg", "transcoding", "video", "mp4", "h264", "hevc", "jellyfin", "media-library"]
+# No license classifier: `license` is an SPDX expression (PEP 639), which replaces it
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Typing :: Typed",
+]
 dependencies = [
     "charset-normalizer>=3.5.2",
-    "colorlog>=6.12.0",
-    "pyyaml>=6.0.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/theobaldik/baycone"
+Source = "https://github.com/theobaldik/baycone"
+Documentation = "https://github.com/theobaldik/baycone#readme"
+Changelog = "https://github.com/theobaldik/baycone/blob/master/CHANGELOG.md"
+Issues = "https://github.com/theobaldik/baycone/issues"
+"Docker image" = "https://hub.docker.com/r/theobaldik/baycone"
 
 [project.scripts]
 baycone-cli = "baycone_cli.cli:main"
-baycone-service = "baycone_service.service:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14"]
 build-backend = "uv_build"
 
-# Three import packages in one distribution; a later split into a uv workspace is a folder move
+# The library and its CLI are the PyPI package; the service is a workspace member shipped only as the Docker image
 [tool.uv.build-backend]
-module-name = ["baycone", "baycone_cli", "baycone_service"]
+module-name = ["baycone", "baycone_cli"]
 module-root = ""
+
+[tool.uv.workspace]
+members = ["service"]
+
+[tool.uv.sources]
+baycone-service = { workspace = true }
 
 [tool.black]
 line-length = 120
@@ -37,6 +65,7 @@ target-version = ['py314']
 
 [dependency-groups]
 dev = [
+    "baycone-service",
     "pycountry>=26.2.16",
     "pytest>=9.0.2",
 ]
@@ -83,3 +112,19 @@ replace = "image: theobaldik/baycone:{new_version}"
 filename = "docs/dockerhub-overview.md"
 search = "image: theobaldik/baycone:{current_version}"
 replace = "image: theobaldik/baycone:{new_version}"
+
+# The service shares the version and requires exactly the matching library
+[[tool.bumpversion.files]]
+filename = "service/pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "service/pyproject.toml"
+search = '"baycone=={current_version}"'
+replace = '"baycone=={new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "uv.lock"
+search = "name = \"baycone-service\"\nversion = \"{current_version}\""
+replace = "name = \"baycone-service\"\nversion = \"{new_version}\""

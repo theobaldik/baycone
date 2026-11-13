@@ -2,33 +2,52 @@ version = 1
 revision = 5
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "baycone",
+    "baycone-service",
+]
+
 [[package]]
 name = "baycone"
 version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "charset-normalizer" },
-    { name = "colorlog" },
-    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "baycone-service" },
     { name = "pycountry" },
     { name = "pytest" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "charset-normalizer", specifier = ">=3.5.2" },
-    { name = "colorlog", specifier = ">=6.12.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-]
+requires-dist = [{ name = "charset-normalizer", specifier = ">=3.5.2" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "baycone-service", editable = "service" },
     { name = "pycountry", specifier = ">=26.2.16" },
     { name = "pytest", specifier = ">=9.0.2" },
+]
+
+[[package]]
+name = "baycone-service"
+version = "0.6.0"
+source = { editable = "service" }
+dependencies = [
+    { name = "baycone" },
+    { name = "colorlog" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "baycone", editable = "." },
+    { name = "colorlog", specifier = ">=6.12.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [[package]]

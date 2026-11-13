@@ -7,7 +7,7 @@ skinparam style strictuml
 hide circle
 hide empty members
 
-package "baycone (core library)" {
+package "baycone <<PyPI: baycone>>" {
     class Encoder {
         - _settings : EncodingSettings
         - _tools : FFmpegTools
@@ -148,7 +148,7 @@ package "baycone (core library)" {
     }
 }
 
-package "baycone_service" {
+package "baycone_service <<Docker image, service/>>" {
     class Service {
         - _watchers : list<DirWatcher>
         - _stop_signal : bool
@@ -223,7 +223,7 @@ package "baycone_service" {
     }
 }
 
-package "baycone_cli" {
+package "baycone_cli <<PyPI: baycone>>" {
     class cli <<module>> {
         + main(argv : list<str>) : int
         + build_settings(args) : EncodingSettings

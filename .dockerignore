@@ -1,16 +1,16 @@
 # Whitelist: ignore the whole context, then re-include only what the image needs.
-# The Dockerfile copies exactly these: pyproject.toml, uv.lock, README.md, the three
-# packages and the license/notice pair. Anything new (docs, samples, tests, .venv, .git, ...)
+# The Dockerfile copies exactly these: both pyproject.toml files, uv.lock, the PyPI overview,
+# the package sources and the license/notice pair. Anything new (docs, samples, tests, .venv, .git, ...)
 # stays out by default and has to be opted in here explicitly.
 
 *
 
 !pyproject.toml
 !uv.lock
-!README.md
+!docs/pypi-overview.md
 !baycone
 !baycone_cli
-!baycone_service
+!service
 !LICENSE
 !NOTICE
 

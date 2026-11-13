@@ -11,16 +11,19 @@ WORKDIR /app
 
 # Copy dependency manifests first (layer-cache friendly)
 COPY pyproject.toml uv.lock ./
+COPY service/pyproject.toml ./service/
 
-# Install production dependencies into a virtual environment
-RUN uv sync --frozen --no-dev --no-install-project
+# Install the service's production dependencies into a virtual environment
+RUN uv sync --frozen --no-dev --package baycone-service --no-install-workspace
 
-# Copy source and install the project itself; the build backend reads README.md and LICENSE for the metadata
-COPY README.md LICENSE ./
+# Copy source and install the service with the library it requires. Not editable, so the final stage needs
+# nothing but the venv; the build backend reads the PyPI overview and LICENSE for the library's metadata
+COPY LICENSE ./
+COPY docs/pypi-overview.md ./docs/
 COPY baycone/ ./baycone/
 COPY baycone_cli/ ./baycone_cli/
-COPY baycone_service/ ./baycone_service/
-RUN uv sync --frozen --no-dev
+COPY service/baycone_service/ ./service/baycone_service/
+RUN uv sync --frozen --no-dev --package baycone-service --no-editable
 
 # ── Final stage ───────────────────────────────────────────────────────────────
 FROM python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
@@ -45,13 +48,8 @@ RUN pip uninstall -y pip
 
 WORKDIR /app
 
-# Bring in the virtual environment from the builder
+# Bring in the virtual environment from the builder; it holds the installed service and library
 COPY --from=builder /app/.venv ./.venv
-
-# Bring in application source: the core library, the CLI and the service
-COPY --from=builder /app/baycone ./baycone/
-COPY --from=builder /app/baycone_cli ./baycone_cli/
-COPY --from=builder /app/baycone_service ./baycone_service/
 
 # Ship the license and the third-party notice with the artifact: distributing
 # the image is distributing the software, so MIT's own attribution clause and

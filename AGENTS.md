@@ -2,11 +2,14 @@
 
 ## Commands
 
-- **Install deps:** `uv sync`
+- **Install deps:** `uv sync` — the whole workspace: the library, the service (a dev dependency of the root) and
+  the dev tools
 - **Run tests:** `uv run pytest`
 - **Run locally:** `BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run baycone-service`
 - **Run the CLI:** `uv run baycone-cli movie.mkv` (or `bin/baycone`)
-- **Build the wheel:** `uv build` — one distribution holding all three packages, built by `uv_build`
+- **Build the PyPI package:** `uv build` — `baycone` (library + CLI) only; the service is never published to PyPI.
+  Its PyPI page is `docs/pypi-overview.md` (the `readme`), so links there must be absolute URLs; check it with
+  `uvx twine check dist/*`
 - **Docker build/run:** `docker compose build && docker compose up -d`
 - **Format:** `black .` (line-length 120, target `py314`) — configured under `[tool.black]` in `pyproject.toml`, so
   never pass those as flags. Not a declared dev dependency: it resolves from PATH / a global `uv tool` install, not from
@@ -46,13 +49,22 @@ Two tests guard against past data-loss/logic bugs — keep them:
 
 ## Architecture
 
-Three import packages in one distribution. `baycone_cli` and `baycone_service` depend on `baycone`, never the other
-way, and the service never on the CLI. A later split into a uv workspace is a folder move.
+A uv workspace of two distributions sharing one version:
+
+| Distribution      | Location    | Import packages          | Published as                          |
+|-------------------|-------------|--------------------------|---------------------------------------|
+| `baycone`         | repo root   | `baycone`, `baycone_cli` | PyPI, with the `baycone-cli` script   |
+| `baycone-service` | `service/`  | `baycone_service`        | the `theobaldik/baycone` Docker image |
+
+`baycone_cli` and `baycone_service` depend on `baycone`, never the other way, and the service never on the CLI. The
+service requires exactly the library of its own version (`baycone==X.Y.Z`, resolved from the workspace). Runtime
+dependencies belong to the distribution that imports them: the library only has `charset-normalizer`, `pyyaml` and
+`colorlog` are the service's.
 
 **`baycone` — core library.** No global state, no environment variables, no YAML, no logging configuration.
 
 - `baycone/__init__.py` — the public API: `Encoder`, `Analyzer`, `Job`, `FileInfo`, `EncodingSettings`, `FFmpegTools`
-  and the errors
+  and the errors. `py.typed` marks the package as typed (PEP 561)
 - `baycone/settings.py` — `EncodingSettings` (every per-file setting, the `defaults` section of `config.yml` minus
   `allowed_extensions`), `FFmpegTools` (binary paths) and `Serializable` / `_validate`, which reject a value of the
   wrong type at load rather than mid-run
@@ -85,24 +97,24 @@ way, and the service never on the CLI. A later split into a uv workspace is a fo
 
 **`baycone_service` — the watching service.**
 
-- `baycone_service/service.py` — `Service` class + `main_loop`, `main()` for the `baycone-service` script and
+- `service/baycone_service/service.py` — `Service` class + `main_loop`, `main()` for the `baycone-service` script and
   `python -m baycone_service` (the Docker `ENTRYPOINT`). SIGTERM is turned into `KeyboardInterrupt` (PID 1 in a
   container ignores it otherwise), and a running ffmpeg is killed on interruption. `config.yml` is hot-reloaded at the
   top of each `main_loop` iteration (`FileChangeTracker` mtime check, the same one `DirWatcher` uses for
   `config.override.yml`); a reload rebuilds the watchers, a failed one keeps the previous config. Docker mounts the
   config **directory** — a single-file bind mount misses editors' write-and-rename saves. `_process_file()` builds an
   `Encoder` per file from the location's settings and archives the original after a successful `process()`
-- `baycone_service/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()`
+- `service/baycone_service/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()`
   replaces its fields in place (removed keys fall back to defaults, a failed load leaves it untouched, an empty file is
   ignored). Other service modules import `from baycone_service.config import config` and read from it at runtime.
   `DefaultsConfig` extends `EncodingSettings` with `allowed_extensions`, `LocationConfig` adds `path`;
   `Config.tools()` gives the `FFmpegTools`. `Constants` and `SpecialDirs` (the location layout) live here too
-- `baycone_service/layout.py` — `LocatedFile.resolve()` finds a file's `LocationConfig`, derives its processed and
+- `service/baycone_service/layout.py` — `LocatedFile.resolve()` finds a file's `LocationConfig`, derives its processed and
   original paths and its `Job` (work dir `.baycone/`, the same `passlogfiles` / `encoded` / `optimized` folders as
   `SpecialDirs`). `archive_original()` moves the original to `_baycone_originals/`
-- `baycone_service/state.py` — `State`, a location's `.baycone/state.json`: failed files and the file in progress with
+- `service/baycone_service/state.py` — `State`, a location's `.baycone/state.json`: failed files and the file in progress with
   its attempt count. Written atomically; an unreadable file starts empty, a failed save only warns
-- `baycone_service/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into
+- `service/baycone_service/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into
   them (they grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
   scan — never sleep per file. The special directory *names* are pruned at any depth, so nested locations do not
   process each other's outputs. `get_new_file()` opens an attempt and `finish(file, failed)` closes it — always pair
@@ -150,7 +162,7 @@ run is watched by `_kill_when_stalled()`: alive means `out_time_us` or the outpu
 **Directory pruning** (`_remove_empty_dirs`) walks up with `rmdir()`, which only ever succeeds on empty directories.
 Never `rmtree` anything under the watch root — sibling media files may not be processed yet.
 
-**Logging** is configured only by `setup_logging()` in `baycone_service/logger.py` (called from `main()`) and by the
+**Logging** is configured only by `setup_logging()` in `service/baycone_service/logger.py` (called from `main()`) and by the
 CLI's `main()` — importing a module must not configure logging. The core logs plan and step results at INFO and the
 10 % progress lines at DEBUG.
 
@@ -185,7 +197,8 @@ CLI's `main()` — importing a module must not configure logging. The core logs 
 - `feature/...` — larger changes. Prepend the issue number when an issue exists (`feature/42-multitrack-audio`,
   otherwise `feature/multitrack-audio`). Merged into `master` once complete.
 - `support/v<major>.<minor>.x` — fixes for older releases (`support/v0.1.x`, `support/v1.1.x`).
-- Releases are marked by tags: `v0.1.0`, `v1.0.0`.
+- Releases are marked by tags: `v0.1.0`, `v1.0.0`. One tag releases both distributions: `baycone` to PyPI and the
+  service to Docker Hub, with one shared changelog.
 
 Only git refs carry the `v` prefix — the same version is written differently per artifact:
 
@@ -195,12 +208,17 @@ Only git refs carry the `v` prefix — the same version is written differently p
 | `support/` branch | `support/v<major>.<minor>.x` | `support/v1.1.x`                              |
 | Changelog heading | plain semver                 | `## [0.1.0]` — required by Common Changelog   |
 | Docker image tag  | plain semver                 | `theobaldik/baycone:0.1.0`, `:0.1`, `:latest` |
+| PyPI release      | plain semver                 | `baycone==0.1.0`                              |
 
 `project.version` in `pyproject.toml` is the single source of truth. Never edit a version by hand — `bump-my-version`
-rewrites it together with every copy listed under `[tool.bumpversion.files]` (`uv.lock`, `compose.yml`, the `image:`
-lines in `README.md` and `docs/dockerhub-overview.md`). A new file that pins the release version must be added there.
-It neither commits nor tags — rename `## [Unreleased]` in `CHANGELOG.md` to the version, commit, then tag
-`v<version>` by hand.
+rewrites it together with every copy listed under `[tool.bumpversion.files]` (`service/pyproject.toml` — its version
+and its `baycone==` pin —, both packages in `uv.lock`, `compose.yml`, the `image:` lines in `README.md` and
+`docs/dockerhub-overview.md`). A new file that pins the release version must be added there. It neither commits nor
+tags — rename `## [Unreleased]` in `CHANGELOG.md` to the version, commit, then tag `v<version>` by hand.
+
+A release publishes both artifacts from that tag: `uv build` + `uv publish` for PyPI, `docker compose build` + push for
+Docker Hub. A release that only touches the service still publishes an unchanged `baycone` to PyPI — the version is
+shared on purpose.
 
 Image tags are declared in `compose.yml` under `build.tags` — always fully qualified as `theobaldik/baycone:...`, never
 a bare `baycone:...` (a bare name resolves to `docker.io/library/`, which cannot be pushed). The GitLab registry is deprecated and no longer published to.
@@ -256,8 +274,12 @@ Image tags use the plain version with no `v` prefix (`theobaldik/baycone:0.1.0`)
   bind-mounted library, so never add build steps that require root at runtime; hosts with different ids override
   `user:` rather than rebuilding.
 - `.dockerignore` is a whitelist (`*` followed by re-includes). A new file the image needs must be opted in there
-  explicitly — currently `pyproject.toml`, `uv.lock`, `README.md`, `baycone/`, `baycone_cli/`,
-  `baycone_service/`, `LICENSE`, `NOTICE`. The build backend needs `README.md` and `LICENSE` for the package metadata.
+  explicitly — currently `pyproject.toml`, `uv.lock`, `docs/pypi-overview.md`, `baycone/`, `baycone_cli/`,
+  `service/`, `LICENSE`, `NOTICE`. The build backend needs the PyPI overview (the library's `readme`) and `LICENSE`
+  for the library's metadata, and building the library needs `baycone_cli/` even though the image only runs the
+  service.
+- The image installs the service non-editable (`uv sync --package baycone-service --no-editable`), so the final stage
+  holds only the venv, no source tree.
 - `LICENSE` and `NOTICE` are copied to `/usr/share/doc/baycone/`: publishing the image distributes the software, so MIT
   attribution and the GPL notices for bundled Debian packages have to travel with the artifact, not just the repo.
 

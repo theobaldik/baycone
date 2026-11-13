@@ -1,0 +1,28 @@
+[project]
+name = "baycone-service"
+version = "0.6.0"
+description = "Baycone service: watches media libraries and processes new files, shipped as the Docker image"
+license = "MIT"
+authors = [
+    { name = "theobaldik" },
+]
+requires-python = ">=3.14"
+dependencies = [
+    "baycone==0.6.0",
+    "colorlog>=6.12.0",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+baycone-service = "baycone_service.service:main"
+
+[tool.uv.sources]
+baycone = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "baycone_service"
+module-root = ""
