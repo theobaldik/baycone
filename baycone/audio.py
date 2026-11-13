@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from baycone.config import LocationConfig
+from baycone.settings import EncodingSettings
 from baycone.languages import BIBLIOGRAPHIC_TO_TERMINOLOGY
 
 UNDEFINED_LANGUAGE = "und"
@@ -95,7 +95,7 @@ def _pick_by_channels(versions: list[AudioStream], preferred: int) -> AudioStrea
     return max(versions, key=lambda s: s.channels)
 
 
-def select_audio_tracks(streams: list[AudioStream], location_config: LocationConfig) -> list[AudioTrack]:
+def select_audio_tracks(streams: list[AudioStream], settings: EncodingSettings) -> list[AudioTrack]:
     """The configured languages in order, one track per language; the original alone when none of them is found."""
     candidates = [s for s in streams if not s.special]
 
@@ -103,13 +103,13 @@ def select_audio_tracks(streams: list[AudioStream], location_config: LocationCon
         original = next((s for s in candidates if s.original), candidates[0])
         languages = [
             original.lang if lang.strip().lower() == ORIGINAL_LANGUAGE else normalize_language(lang)
-            for lang in location_config.target_audio_languages
+            for lang in settings.target_audio_languages
         ]
         selected = []
         for language in dict.fromkeys(languages):
             versions = [s for s in candidates if s.lang == language]
             if versions:
-                selected.append(_pick_by_channels(versions, location_config.target_audio_channels))
+                selected.append(_pick_by_channels(versions, settings.target_audio_channels))
         selected = selected or [original]
     else:
         selected = streams[:1]
@@ -118,7 +118,7 @@ def select_audio_tracks(streams: list[AudioStream], location_config: LocationCon
         AudioTrack(
             stream=stream,
             bitrate=(
-                cap_bitrate(stream.aac_overall_bitrate, location_config.target_audio_channel_bitrate * stream.channels)
+                cap_bitrate(stream.aac_overall_bitrate, settings.target_audio_channel_bitrate * stream.channels)
                 if stream.shall_encode
                 else 0
             ),

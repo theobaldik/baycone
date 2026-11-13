@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from baycone.config import Config, Constants, DefaultsConfig, LocationConfig, SpecialDirs, load_config
-from baycone import config as config_module
+from baycone_service.config import Config, Constants, DefaultsConfig, LocationConfig, SpecialDirs, load_config
+from baycone_service import config as config_module
 
 
 def parse(yaml_text: str) -> Config:

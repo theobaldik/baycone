@@ -26,7 +26,7 @@ plain MP4 that any player handles.
   up again (straight from the second pass when the first one had finished), and failed files stay remembered
 - Waits for free disk space instead of failing, and stops an ffmpeg that hangs
 - Runs as a Docker container; configured entirely through a YAML file and environment variables
-- Ships a standalone CLI (`bin/baycone`) for one-off transcodes
+- Ships a standalone CLI (`baycone-cli`) for one-off transcodes, and the same pipeline as a Python library
 
 ## Limitations
 
@@ -34,7 +34,6 @@ plain MP4 that any player handles.
   disposition flags only, so an unflagged one can still be picked as a regular track of its language.
 - MP4 has no "original" track flag — the original language is marked by being the first (default) track. The flag is
   kept when `target_container` is Matroska.
-- The standalone CLI handles the first audio track only.
 - Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
   VobSub) are dropped.
 - A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
@@ -259,30 +258,67 @@ Requires Python 3.14, `ffmpeg`, and `ffprobe` on `PATH`.
 
 ```bash
 uv sync
-BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run python -m baycone
+BAYCONE_CONFIG=config/config.yml BAYCONE_LOCATIONS=/your/media uv run baycone-service
 ```
 
 ## Standalone CLI
 
-For transcoding a single file without running the service:
+`baycone-cli` runs the service's pipeline on a single file, without a watched location: the same analysis, encode
+decisions, audio track selection and crash-safe output. The input file is never moved or modified.
 
 ```bash
-bin/baycone movie.mkv                 # two-pass encode, then optimize
-bin/baycone movie.mkv -o              # skip the encode, only optimize
-bin/baycone movie.mkv -i              # print the ffprobe result and exit
-bin/baycone movie.mkv -l cze -v 1800  # audio language and video bitrate
+uv tool install git+https://github.com/theobaldik/baycone   # or `bin/baycone` from a checkout
+
+baycone-cli movie.mkv                          # result in _baycone_processed/movie.mp4 next to the input
+baycone-cli movie.mkv --output /media/out.mp4
+baycone-cli movie.mkv -l cze -l eng -v 1800    # audio languages in order, video bitrate
+baycone-cli movie.mkv --remux-only             # never encode, only remux into MP4
+baycone-cli movie.mkv --info                   # print the analysis as JSON and exit
 ```
 
-The result is written to `_baycone_processed/` next to the input file; the input itself is left untouched. Duration and
-channel count are detected with `ffprobe`.
+| Flag                    | Default                   | Description                                             |
+|-------------------------|---------------------------|---------------------------------------------------------|
+| `--output`              | `_baycone_processed/`     | Output file                                             |
+| `--work-dir`            | `.baycone/cli/`           | Temporary files; the default one is removed afterwards  |
+| `-l`, `--language`      | `original` `eng` `cze`    | Audio language to keep, repeatable, in order            |
+| `-v`, `--video-bitrate` | `2250`                    | Target video bitrate in kbps                            |
+| `-a`, `--audio-bitrate` | `64`                      | Target audio bitrate per channel in kbps                |
+| `--codec`               | `h264`                    | Target video codec, `h264` or `hevc`                    |
+| `--subtitles`           | none                      | Subtitle language to extract to `.srt`, repeatable      |
+| `--remux-only`          | off                       | Copy every stream, only remux into the target container |
+| `--info`                | off                       | Print the analysis as JSON and exit                     |
+| `--ffmpeg`, `--ffprobe` | `ffmpeg`, `ffprobe`       | Binaries to use                                         |
 
-| Flag                    | Default | Description                         |
-|-------------------------|---------|-------------------------------------|
-| `-l`, `--language`      | `eng`   | Audio track language (3 characters) |
-| `-v`, `--video-bitrate` | `2250`  | Target video bitrate in kbps        |
-| `-a`, `--audio-bitrate` | `64`    | Target audio bitrate per channel    |
-| `-o`, `--optimize`      | off     | Skip transcoding, only optimize     |
-| `-i`, `--info`          | off     | Print file information and exit     |
+Exit codes: `0` success, `1` invalid arguments, `2` the file could not be processed.
+
+## Using as a library
+
+The `baycone` package holds the pipeline without any service state, configuration file or environment variables:
+
+```bash
+uv add "baycone @ git+https://github.com/theobaldik/baycone@v0.6.0"
+```
+
+```python
+from pathlib import Path
+
+from baycone import BayconeError, Encoder, EncodingSettings, Job
+
+settings = EncodingSettings(target_video_bitrate=1800, target_audio_languages=["original", "eng"])
+job = Job(input_file=Path("movie.mkv"), output_file=Path("out/movie.mp4"), work_dir=Path("work"))
+
+try:
+    Encoder(settings, on_progress=lambda step, percent: print(step, percent)).process(job)
+except BayconeError as e:
+    ...  # the input is untouched and no output is left behind
+```
+
+`EncodingSettings` takes the same keys as the `defaults` section of `config.yml`. `Encoder.process()` raises
+`InsufficientSpaceError` before writing anything when the work directory lacks space, `InvalidFileError` for an
+unreadable or truncated file, `EncodingError` when FFmpeg fails and `SourceChangedError` when the input changed while
+it was processed. Keep `work_dir` on the same filesystem as `output_file`, otherwise publishing copies the file.
+`Analyzer(settings).analyze(path)` returns the analysis alone. The library logs through `logging` under `baycone.*`
+and configures no handlers.
 
 ## Running tests
 
@@ -299,7 +335,7 @@ Architecture and behavior diagrams live in [`docs/`](docs) as PlantUML sources w
 | [`class_structure`](docs/class_structure.svg)         | Classes and their relations              |
 | [`processing_activity`](docs/processing_activity.svg) | End-to-end flow for a single file        |
 | [`processing_sequence`](docs/processing_sequence.svg) | Service ↔ watcher ↔ encoder polling loop |
-| [`encoding_sequence`](docs/encoding_sequence.svg)     | Analyze → encode → optimize → archive    |
+| [`encoding_sequence`](docs/encoding_sequence.svg)     | Analyze → encode → optimize → publish    |
 
 Regenerate them after editing a `.puml` with `plantuml -tsvg -nometadata docs/*.puml`.
 

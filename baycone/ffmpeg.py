@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from baycone.audio import AudioTrack
-from baycone.config import config
+from baycone.settings import FFmpegTools
 
 # Spliced in place of these elements: one argument group per output audio track, the video filters
 AUDIO_ARGS = "{audio_args}"
@@ -366,14 +366,22 @@ CMD_FFPROBE_TAIL = [
 ]
 
 
-def _render(template: list[str], splices: dict[str, list[str]] | None = None, **values: object) -> list[str]:
+DEFAULT_TOOLS = FFmpegTools()
+
+
+def _render(
+    template: list[str],
+    splices: dict[str, list[str]] | None = None,
+    tools: FFmpegTools = DEFAULT_TOOLS,
+    **values: object,
+) -> list[str]:
     splices = splices or {}
     cmd = []
     for arg in template:
         if arg in splices:
             cmd.extend(splices[arg])
         else:
-            cmd.append(arg.format(ffmpeg=config.ffmpeg_path, ffprobe=config.ffprobe_path, **values))
+            cmd.append(arg.format(ffmpeg=tools.ffmpeg, ffprobe=tools.ffprobe, **values))
     return cmd
 
 
@@ -425,11 +433,13 @@ def get_cmd_encode_movie_pass_1(
     codec: str,
     video_bitrate: int,
     video_filters: list[str],
+    tools: FFmpegTools = DEFAULT_TOOLS,
 ) -> list[str]:
     video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_1,
-        {
+        tools=tools,
+        splices={
             VIDEO_ARGS: _video_args(video_filters),
             VIDEO_CODEC_ARGS: _render(video_codec.pass_1, passlog_file=passlog_file.absolute()),
         },
@@ -448,11 +458,13 @@ def get_cmd_encode_movie_pass_2(
     video_bitrate: int,
     video_filters: list[str],
     audio_tracks: list[AudioTrack],
+    tools: FFmpegTools = DEFAULT_TOOLS,
 ) -> list[str]:
     video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_2,
-        {
+        tools=tools,
+        splices={
             VIDEO_ARGS: _video_args(video_filters),
             VIDEO_CODEC_ARGS: _render(video_codec.pass_2, passlog_file=passlog_file.absolute()),
             AUDIO_ARGS: _audio_encode_args(audio_tracks),
@@ -465,31 +477,44 @@ def get_cmd_encode_movie_pass_2(
     )
 
 
-def get_cmd_encode_audio(input_file: Path, output_file: Path, audio_tracks: list[AudioTrack]) -> list[str]:
+def get_cmd_encode_audio(
+    input_file: Path, output_file: Path, audio_tracks: list[AudioTrack], tools: FFmpegTools = DEFAULT_TOOLS
+) -> list[str]:
     return _render(
         CMD_FFMPEG_ENCODE_AUDIO,
-        {AUDIO_ARGS: _audio_encode_args(audio_tracks)},
+        tools=tools,
+        splices={AUDIO_ARGS: _audio_encode_args(audio_tracks)},
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
     )
 
 
-def get_cmd_optimize(input_file: Path, output_file: Path, audio_tracks: list[AudioTrack], encoded: bool) -> list[str]:
+def get_cmd_optimize(
+    input_file: Path,
+    output_file: Path,
+    audio_tracks: list[AudioTrack],
+    encoded: bool,
+    tools: FFmpegTools = DEFAULT_TOOLS,
+) -> list[str]:
     return _render(
         CMD_FFMPEG_OPTIMIZE,
-        {AUDIO_ARGS: _audio_metadata_args(audio_tracks, encoded)},
+        tools=tools,
+        splices={AUDIO_ARGS: _audio_metadata_args(audio_tracks, encoded)},
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
     )
 
 
-def get_cmd_cropdetect(input_file: Path) -> list[str]:
-    return _render(CMD_FFMPEG_CROPDETECT, input_file=input_file.absolute())
+def get_cmd_cropdetect(input_file: Path, tools: FFmpegTools = DEFAULT_TOOLS) -> list[str]:
+    return _render(CMD_FFMPEG_CROPDETECT, tools=tools, input_file=input_file.absolute())
 
 
-def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int, copy: bool) -> list[str]:
+def get_cmd_extract_subtitle(
+    input_file: Path, output_file: Path, source: int, copy: bool, tools: FFmpegTools = DEFAULT_TOOLS
+) -> list[str]:
     return _render(
         CMD_FFMPEG_EXTRACT_SUBTITLE,
+        tools=tools,
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
         source=source,
@@ -497,9 +522,9 @@ def get_cmd_extract_subtitle(input_file: Path, output_file: Path, source: int, c
     )
 
 
-def get_cmd_ffprobe(input_file: Path) -> list[str]:
-    return _render(CMD_FFPROBE, input_file=input_file.absolute())
+def get_cmd_ffprobe(input_file: Path, tools: FFmpegTools = DEFAULT_TOOLS) -> list[str]:
+    return _render(CMD_FFPROBE, tools=tools, input_file=input_file.absolute())
 
 
-def get_cmd_ffprobe_tail(input_file: Path, start: float) -> list[str]:
-    return _render(CMD_FFPROBE_TAIL, input_file=input_file.absolute(), start=start)
+def get_cmd_ffprobe_tail(input_file: Path, start: float, tools: FFmpegTools = DEFAULT_TOOLS) -> list[str]:
+    return _render(CMD_FFPROBE_TAIL, tools=tools, input_file=input_file.absolute(), start=start)

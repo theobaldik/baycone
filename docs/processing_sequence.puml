@@ -1,51 +1,82 @@
 @startuml processing_sequence
 
 title Processing Sequence
-footer Version 1.0
+footer Version 2.0
 
 skinparam style strictuml
 
 participant "Service" as service
 participant "DirWatcher" as watcher
-participant "Config" as config
+participant "State" as state
+participant "LocatedFile" as located
 participant "Encoder" as encoder
 
 activate service
 
 loop until stopped (SIGTERM / Ctrl+C)
+    opt config.yml changed
+        service -> service : reload config, rebuild watchers,\nretry failed files
+    end
+
     loop for each watched location
         service -> watcher : get_new_file()
         activate watcher
 
-        opt override file mtime changed
-            watcher -> config : load_config_override(location_config, base)
-            activate config
-            config --> watcher : reset to base, override applied
-            deactivate config
+        opt config.override.yml changed
+            watcher -> watcher : reset to the base config, apply the override,\nunpause, retry failed files
         end
 
-        watcher -> watcher : walk, prune special dirs,\nfilter by allowed_extensions
-        watcher -> watcher : record size + mtime of every file
-
-        alt file unchanged since previous scan\nand not failed in this state
-            watcher --> service : file_path
-        else new, still being written or failed
+        alt location paused (waiting for free space)
             watcher --> service : None
+        else
+            watcher -> watcher : walk, prune special dirs,\nfilter by allowed_extensions
+            watcher -> watcher : record size + mtime of every file
+
+            alt a file unchanged since the previous scan\nand not failed with this signature
+                watcher -> state : current file, attempts + 1
+                activate state
+                state --> watcher : saved
+                deactivate state
+                note right
+                    Over ""MAX_ATTEMPTS"" means the service died on it
+                    every time: the file is failed and skipped.
+                end note
+                watcher --> service : file_path
+            else new, still being written or failed
+                watcher --> service : None
+            end
         end
         deactivate watcher
 
         opt file_path returned
-            service -> encoder : process(file_path)
+            service -> located : resolve(file_path)
+            activate located
+            located --> service : location settings, job
+            deactivate located
+
+            service -> encoder : process(job)
             activate encoder
-            encoder -> encoder : analyze, encode,\noptimize, archive
+            encoder -> encoder : analyze, encode, optimize,\npublish, extract subtitles
             note right: See encoding_sequence.puml
-            encoder --> service : succeeded
+            encoder --> service : output_file, or raises
             deactivate encoder
 
-            opt failed or raised
-                service -> watcher : mark_failed(file_path)
-                note right: Skipped until the file is modified.
+            alt published
+                service -> service : archive_original()
+            else InsufficientSpaceError
+                service -> watcher : pause()
+            else BayconeError or any other error
+                service -> service : failed = True
             end
+
+            service -> watcher : finish(file_path, failed)
+            note right
+                Always, in a ""finally"" that a stop signal reaches too.
+                A failed file is skipped until it changes.
+            end note
+            activate watcher
+            watcher -> state : clear current, remember failed
+            deactivate watcher
         end
     end
 

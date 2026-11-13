@@ -5,7 +5,7 @@ from pathlib import Path
 from charset_normalizer import from_bytes
 
 from baycone.audio import normalize_language
-from baycone.config import LocationConfig
+from baycone.settings import EncodingSettings
 from baycone.languages import ALPHA_3_TO_ALPHA_2
 
 log = logging.getLogger(__name__)
@@ -23,10 +23,10 @@ class SubtitleStream:
     special: bool = False
 
 
-def select_subtitle_streams(streams: list[SubtitleStream], location_config: LocationConfig) -> list[SubtitleStream]:
+def select_subtitle_streams(streams: list[SubtitleStream], settings: EncodingSettings) -> list[SubtitleStream]:
     """First text stream of each of `target_subtitle_languages`, in that order; languages without one are skipped."""
     candidates = [s for s in streams if s.codec in TEXT_SUBTITLE_CODECS and not s.special]
-    languages = dict.fromkeys(normalize_language(lang) for lang in location_config.target_subtitle_languages)
+    languages = dict.fromkeys(normalize_language(lang) for lang in settings.target_subtitle_languages)
 
     selected = []
     for language in languages:

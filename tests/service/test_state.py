@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baycone.state import State
+from baycone_service.state import State
 
 
 @pytest.fixture

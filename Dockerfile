@@ -15,8 +15,11 @@ COPY pyproject.toml uv.lock ./
 # Install production dependencies into a virtual environment
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source and install the project itself
+# Copy source and install the project itself; the build backend reads README.md and LICENSE for the metadata
+COPY README.md LICENSE ./
 COPY baycone/ ./baycone/
+COPY baycone_cli/ ./baycone_cli/
+COPY baycone_service/ ./baycone_service/
 RUN uv sync --frozen --no-dev
 
 # ── Final stage ───────────────────────────────────────────────────────────────
@@ -45,8 +48,10 @@ WORKDIR /app
 # Bring in the virtual environment from the builder
 COPY --from=builder /app/.venv ./.venv
 
-# Bring in application source
+# Bring in application source: the core library, the CLI and the service
 COPY --from=builder /app/baycone ./baycone/
+COPY --from=builder /app/baycone_cli ./baycone_cli/
+COPY --from=builder /app/baycone_service ./baycone_service/
 
 # Ship the license and the third-party notice with the artifact: distributing
 # the image is distributing the software, so MIT's own attribution clause and
@@ -76,4 +81,4 @@ RUN groupadd --gid 1000 baycone && \
     useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin baycone
 USER 1000:1000
 
-ENTRYPOINT ["python", "-m", "baycone"]
+ENTRYPOINT ["python", "-m", "baycone_service"]

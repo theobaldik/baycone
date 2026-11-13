@@ -1,6 +1,5 @@
 import logging
 import signal
-import sys
 import time
 from dataclasses import fields
 from pathlib import Path
@@ -8,10 +7,12 @@ from types import FrameType
 
 import yaml
 
-from baycone import config
-from baycone.encoding import Encoder, InsufficientSpaceError
-from baycone.logger import setup_logging
-from baycone.watcher import DirWatcher, FileChangeTracker
+from baycone.encoding import Encoder
+from baycone.errors import BayconeError, InsufficientSpaceError
+from baycone_service import config
+from baycone_service.layout import LocatedFile, archive_original
+from baycone_service.logger import setup_logging
+from baycone_service.watcher import DirWatcher, FileChangeTracker
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,6 @@ log = logging.getLogger(__name__)
 class Service:
     def __init__(self) -> None:
         self._watchers: list[DirWatcher] = []
-        self._encoder: Encoder = Encoder()
         self._stop_signal: bool = False
         self._config_file: FileChangeTracker | None = None
 
@@ -48,6 +48,20 @@ class Service:
         for watcher in self._watchers:
             watcher.retry_failed()
 
+    def _process_file(self, file_path: Path) -> bool:
+        """`False` for a file that failed. The original is archived only once its output is published."""
+        located = LocatedFile.resolve(file_path)
+        encoder = Encoder(located.location_config, config.config.tools())
+        try:
+            encoder.process(located.job())
+        except InsufficientSpaceError:
+            raise
+        except BayconeError as e:
+            log.error(f"Processing aborted: {e}")
+            return False
+        archive_original(located)
+        return True
+
     def _process_next(self) -> bool:
         """Returns `True` if a file was picked up."""
         processed = False
@@ -56,7 +70,7 @@ class Service:
                 processed = True
                 failed = False
                 try:
-                    failed = not self._encoder.process(file)
+                    failed = not self._process_file(file)
                 except InsufficientSpaceError as e:
                     # Not the file's fault: it is left alone and tried again later
                     log.warning(f"Not enough free space: {e}")
@@ -116,6 +130,6 @@ class Service:
         raise KeyboardInterrupt
 
 
-if __name__ == "__main__":
+def main() -> int:
     setup_logging()
-    sys.exit(Service().start())
+    return Service().start()

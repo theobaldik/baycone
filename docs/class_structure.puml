@@ -1,230 +1,297 @@
 @startuml class_structure
 
 title Class Structure
-footer Version 1.0
+footer Version 2.0
 
 skinparam style strictuml
 hide circle
+hide empty members
 
-' Definitions
+package "baycone (core library)" {
+    class Encoder {
+        - _settings : EncodingSettings
+        - _tools : FFmpegTools
+        - _on_progress : ProgressCallback | None
+        - _analyzer : Analyzer
+        - _job : Job
+        - _processing_file : FileInfo
+        - _signature : Signature
+        + process(job : Job, remux_only : bool) : Path
+        - _check_free_space(shall_encode : bool)
+        - _encode() : bool
+        - _first_pass(cmd : list<str>)
+        - _is_first_pass_done(cmd : list<str>) : bool
+        - _optimize(encoded : bool) : bool
+        - _publish()
+        - _extract_subtitles()
+        - _cleanup_workdirs()
+        - _run_ffmpeg(cmd : list<str>, step : str, output_file : Path)
+        - _kill_when_stalled(process, output_file, done)
+        - _video_filters() : dict<str, str>
+        - _target_video_bitrate() : int
+    }
 
-class Service {
-    - _watchers : list<DirWatcher>
-    - _encoder : Encoder
-    - _stop_signal : bool
-    + start() : int
-    + stop()
-    + main_loop()
-    - _process_next() : bool
-    - {static} _handle_sigterm(signum : int, frame)
+    class Analyzer {
+        - _settings : EncodingSettings
+        - _tools : FFmpegTools
+        + analyze(file_path : Path) : FileInfo
+        + detect_crop(file_path : Path, video : VideoStream)
+        - _get_file_info(file_path : Path) : FileInfo
+        - _is_complete(file_path, start_time, duration) : bool
+        - _get_ffprobe_result(file_path : Path) : dict | None
+    }
+
+    class Job <<dataclass>> {
+        + input_file : Path
+        + output_file : Path
+        + work_dir : Path
+        + name : str
+        + passlog_path : Path
+        + first_pass_path : Path
+        + encoding_path : Path
+        + optimized_path : Path
+        + subtitle_path(lang : str) : Path
+        + clear_workdirs()
+        + clear_passlog()
+    }
+
+    class FileInfo {
+        + file_path : Path
+        + is_valid : bool
+        + shall_remux : bool
+        + duration : int
+        + containers : list<str>
+        + video_stream : VideoStream
+        + audio_streams : list<AudioStream>
+        + audio_tracks : list<AudioTrack>
+        + subtitle_streams : list<SubtitleStream>
+        + subtitle_tracks : list<SubtitleStream>
+    }
+
+    class VideoStream <<dataclass>> {
+        + shall_encode : bool
+        + codec : str
+        + bitrate : int
+        + width : int
+        + height : int
+        + pix_fmt : str
+        + color_transfer : str
+        + crop_height : int
+        + crop_top : int
+        + is_hdr : bool
+    }
+
+    class AudioStream <<dataclass>> {
+        + index : int
+        + shall_encode : bool
+        + codec : str
+        + channel_bitrate : int
+        + channels : int
+        + lang : str
+        + original : bool
+        + special : bool
+    }
+
+    class AudioTrack <<dataclass>> {
+        + stream : AudioStream
+        + bitrate : int
+        + default : bool
+        + title : str
+        + disposition : str
+    }
+
+    class SubtitleStream <<dataclass>> {
+        + index : int
+        + codec : str
+        + lang : str
+        + special : bool
+    }
+
+    class EncodingSettings <<dataclass>> {
+        + allowed_containers / video / audio codecs
+        + target_* : container, codecs, bitrates, languages
+        + limit_* : video bitrate and height, audio bitrate
+        + check_free_space : bool
+    }
+
+    class FFmpegTools <<dataclass>> {
+        + ffmpeg : str
+        + ffprobe : str
+    }
+
+    class Serializable <<mixin>> {
+        + from_dict(data : dict)
+        + to_dict() : dict
+    }
+
+    class BayconeError <<exception>>
+    class InsufficientSpaceError <<exception>>
+    class InvalidFileError <<exception>>
+    class EncodingError <<exception>>
+    class SourceChangedError <<exception>>
+
+    class ffmpeg <<module>> {
+        + get_cmd_*(..., tools : FFmpegTools) : list<str>
+    }
+
+    class "audio / subtitles" as selection <<module>> {
+        + select_audio_tracks(streams, settings) : list<AudioTrack>
+        + select_subtitle_streams(streams, settings) : list<SubtitleStream>
+        + normalize_language(code : str) : str
+    }
+
+    class files <<module>> {
+        + file_signature(path) : Signature | None
+        + fsync(path)
+        + fsync_dir(directory)
+        + write_atomic(path, text)
+    }
 }
 
-class DirWatcher {
-    - _dir_path : Path
-    - _location_config : LocationConfig
-    - _base_config : dict
-    - _override_mtime : int | None
-    - _signatures : dict<Path, Signature>
-    - _failed : dict<Path, Signature>
-    + special_dirs : SpecialDirs
-    + get_new_file() : Path | None
-    + mark_failed(file_path : Path)
-    - _iter_files(extensions : set<str>) : Iterator<Path>
-    - _reload_config_override()
-    - _create_special_dirs()
+package "baycone_service" {
+    class Service {
+        - _watchers : list<DirWatcher>
+        - _stop_signal : bool
+        - _config_file : FileChangeTracker
+        + start() : int
+        + stop()
+        + main_loop()
+        - _process_next() : bool
+        - _process_file(file_path : Path) : bool
+        - _reload_config()
+    }
+
+    class DirWatcher {
+        - _location_config : LocationConfig
+        - _signatures : dict<Path, Signature>
+        - _state : State
+        + special_dirs : SpecialDirs
+        + get_new_file() : Path | None
+        + finish(file_path : Path, failed : bool)
+        + retry_failed()
+        + pause()
+    }
+
+    class State <<dataclass>> {
+        + failed : dict<str, Signature>
+        + current : str
+        + attempts : int
+        + load(path) : State
+        + save(path)
+    }
+
+    class LocatedFile <<dataclass>> {
+        + file_path : Path
+        + location_config : LocationConfig
+        + special_dirs : SpecialDirs
+        + resolve(file_path) : LocatedFile
+        + processed_path : Path
+        + original_path : Path
+        + job() : Job
+    }
+
+    class layout <<module>> {
+        + archive_original(located : LocatedFile)
+    }
+
+    class Config <<singleton>> {
+        + ffmpeg_path : str
+        + ffprobe_path : str
+        + poll_interval : float
+        + defaults : DefaultsConfig
+        + locations : list<LocationConfig>
+        + tools() : FFmpegTools
+    }
+
+    class DefaultsConfig <<dataclass>> {
+        + allowed_extensions : list<str>
+    }
+
+    class LocationConfig <<dataclass>> {
+        + path : str
+        + abspath : Path
+    }
+
+    class SpecialDirs {
+        + root_dir : Path
+        + temp_dir : Path
+        + originals_dir : Path
+        + processed_dir : Path
+        + state_file : Path
+        + create()
+        + clear_workdirs()
+    }
 }
 
-class Analyzer <<static>> {
-    + {static} analyze(file_path : Path) : FileInfo
-    + {static} detect_crop(file_path : Path, video : VideoStream)
-    - {static} _get_file_info(file_path : Path) : FileInfo
-    - {static} _get_bitrate(stream : dict) : int
-    - {static} _get_ffprobe_result(file_path : Path) : dict | None
+package "baycone_cli" {
+    class cli <<module>> {
+        + main(argv : list<str>) : int
+        + build_settings(args) : EncodingSettings
+    }
+
+    class Console {
+        + progress(step : str, percent : float)
+        + end_line()
+    }
 }
 
-class Encoder {
-    - _processing_file : FileInfo
-    + process(file_path : Path) : bool
-    - _encode() : bool
-    - _optimize(encoded : bool) : bool
-    - _archive_original()
-    - _cleanup_workdirs()
-    - _run_ffmpeg(cmd : list<str>, step : str)
-    - _log_progress(process : Popen, step : str)
-    - _log_plan()
-    - _video_filters() : dict<str, str>
-    - _target_video_bitrate() : int
-    - {static} _remove_empty_dirs(directory : Path, root_dir : Path)
-    - {static} _clear_dir(directory : Path)
-}
+' Core relations
 
-class FileInfo {
-    + is_valid : bool
-    + shall_remux : bool
-    + duration : int
-    + containers : list<str>
-    + file_path : Path
-    + relative_path : Path
-    + passlog_path : Path
-    + encoding_path : Path
-    + original_path : Path
-    + processed_path : Path
-    + location_config : LocationConfig
-    + special_dirs : SpecialDirs
-}
-
-class VideoStream <<dataclass>> {
-    + shall_encode : bool
-    + codec : str
-    + bitrate : int
-    + width : int
-    + height : int
-    + pix_fmt : str
-    + color_transfer : str
-    + crop_height : int
-    + crop_top : int
-    + is_hdr : bool
-}
-
-class AudioStream <<dataclass>> {
-    + index : int
-    + shall_encode : bool
-    + codec : str
-    + channel_bitrate : int
-    + channels : int
-    + lang : str
-    + title : str
-    + original : bool
-    + special : bool
-    + overall_bitrate : int
-    + generate_track_name() : str
-}
-
-class AudioTrack <<dataclass>> {
-    + stream : AudioStream
-    + bitrate : int
-    + default : bool
-    + title : str
-    + disposition : str
-}
-
-class audio <<module>> {
-    + select_audio_tracks(streams, location_config) : list<AudioTrack>
-    + normalize_language(code : str) : str
-    + cap_bitrate(source : int, target : int) : int
-}
-
-class ffmpeg <<module>> {
-    + get_cmd_encode_movie_pass_1() : list<str>
-    + get_cmd_encode_movie_pass_2() : list<str>
-    + get_cmd_encode_audio() : list<str>
-    + get_cmd_optimize() : list<str>
-    + get_cmd_ffprobe() : list<str>
-}
-
-class Serializable <<mixin>> {
-    + from_dict(data : dict)
-    + to_dict() : dict
-}
-
-class Config <<singleton>> {
-    + ffmpeg_path : str
-    + ffprobe_path : str
-    + poll_interval : float
-    + defaults : DefaultsConfig
-    + locations : list<LocationConfig>
-}
-
-class DefaultsConfig <<dataclass>> {
-    + allowed_extensions : list<str>
-    + allowed_containers : list<str>
-    + allowed_video_codecs : list<str>
-    + allowed_audio_codecs : list<str>
-    + target_extension : str
-    + target_container : str
-    + target_video_codec : str
-    + target_video_bitrate : int
-    + target_audio_codec : str
-    + target_audio_channel_bitrate : int
-    + target_audio_languages : list<str>
-    + target_audio_channels : int
-    + limit_video_bitrate : int
-    + limit_video_height : int
-    + limit_video_width : int
-    + limit_audio_channel_bitrate : int
-}
-
-class LocationConfig <<dataclass>> {
-    + path : str
-    + abspath : Path
-}
-
-class SpecialDirs {
-    + root_dir : Path
-    + temp_dir : Path
-    + passlog_dir : Path
-    + encoded_dir : Path
-    + originals_dir : Path
-    + processed_dir : Path
-    + exists() : bool
-    + create()
-}
-
-class Constants {
-    + {static} DIR_TEMP : Path
-    + {static} DIR_PASSLOG : Path
-    + {static} DIR_ENCODED : Path
-    + {static} DIR_ORIGINALS : Path
-    + {static} DIR_PROCESSED : Path
-    + {static} SPECIAL_DIRS : tuple<Path>
-    + {static} FILE_CONFIG_OVERRIDE : Path
-    + {static} DIR_LOCATIONS : str
-    + {static} FILE_CONFIG : str
-    + {static} get_missing_env_variables() : list<str>
-}
-
-' Relations
-
-Service o-- DirWatcher : one per location
-Service --> Encoder
-
-Encoder ..> Analyzer : uses
-Encoder --> FileInfo : holds current
+Encoder --> Analyzer
+Encoder --> Job : current
+Encoder --> FileInfo : current
+Encoder --> EncodingSettings
+Encoder --> FFmpegTools
 Encoder ..> ffmpeg : builds commands
+Encoder ..> files : sync, signature
+Encoder ..> BayconeError : raises
 
-Analyzer ..> ffmpeg : builds ffprobe command
 Analyzer ..> FileInfo : creates
+Analyzer ..> selection : selects tracks
+Analyzer ..> ffmpeg : builds ffprobe commands
 
 FileInfo *-- VideoStream
 FileInfo *-- "0..*" AudioStream
 FileInfo *-- "0..*" AudioTrack : selected
+FileInfo *-- "0..*" SubtitleStream
 AudioTrack --> AudioStream
 
-Analyzer ..> audio : selects tracks
-audio ..> AudioTrack : creates
-audio ..> LocationConfig : reads preferences
-ffmpeg ..> AudioTrack : per-track arguments
-FileInfo --> LocationConfig : resolved from Config
-FileInfo --> SpecialDirs : resolved from Config
+EncodingSettings --|> Serializable
+InsufficientSpaceError --|> BayconeError
+InvalidFileError --|> BayconeError
+EncodingError --|> BayconeError
+SourceChangedError --|> BayconeError
 
+' Service relations
+
+Service o-- DirWatcher : one per location
+Service ..> LocatedFile : resolves
+Service ..> Encoder : one per file
+Service ..> layout : archives the original
+DirWatcher --> State
+DirWatcher --> SpecialDirs
 DirWatcher --> LocationConfig : resets and overrides
-DirWatcher --> SpecialDirs : prunes from scan
-DirWatcher ..> Config : load_config_override()
-
-LocationConfig --|> DefaultsConfig
-Config --|> Serializable
-DefaultsConfig --|> Serializable
+LocatedFile --> LocationConfig
+LocatedFile --> SpecialDirs
+LocatedFile ..> Job : creates
 Config *-- DefaultsConfig
 Config *-- "0..*" LocationConfig
+Config --|> Serializable
+DefaultsConfig --|> EncodingSettings
+LocationConfig --|> DefaultsConfig
 
-SpecialDirs ..> Constants
-LocationConfig ..> Constants
-ffmpeg ..> Config : reads binary paths
+' CLI relations
+
+cli ..> Encoder
+cli ..> Analyzer : --info
+cli ..> Job : creates
+cli ..> EncodingSettings : from flags
+cli --> Console : on_progress
 
 note bottom of Config
-    Module-level global singleton in ""baycone.config"".
-    ""load_config()"" mutates it in place; every module
-    reads from it at runtime.
+    Module-level global singleton in ""baycone_service.config"".
+    ""load_config()"" mutates it in place. The core never reads it:
+    the service hands each ""Encoder"" its location's settings.
 end note
 
 @enduml

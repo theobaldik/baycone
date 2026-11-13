@@ -4,7 +4,7 @@ import pytest
 
 from baycone import ffmpeg
 from baycone.audio import AudioStream, AudioTrack
-from baycone.config import config
+from baycone.settings import FFmpegTools
 
 INPUT = Path("/media/movies/movie.mkv")
 OUTPUT = Path("/media/movies/.baycone/encoded/movie.mp4")
@@ -15,25 +15,18 @@ SURROUND = AudioTrack(AudioStream(index=0, channels=6, lang="eng", original=True
 TRACKS = [STEREO, SURROUND]
 
 
-@pytest.fixture
-def default_binaries():
-    ffmpeg_path, ffprobe_path = config.ffmpeg_path, config.ffprobe_path
-    yield
-    config.ffmpeg_path, config.ffprobe_path = ffmpeg_path, ffprobe_path
-
-
-def all_commands() -> list[list[str]]:
+def all_commands(tools: FFmpegTools = ffmpeg.DEFAULT_TOOLS) -> list[list[str]]:
     return [
-        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, []),
-        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS),
-        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "hevc", 2250, []),
-        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS),
-        ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS),
-        ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False),
-        ffmpeg.get_cmd_cropdetect(INPUT),
-        ffmpeg.get_cmd_ffprobe(INPUT),
-        ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0),
-        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1, copy=False),
+        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [], tools=tools),
+        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS, tools=tools),
+        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "hevc", 2250, [], tools=tools),
+        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "hevc", 2250, [], TRACKS, tools=tools),
+        ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS, tools=tools),
+        ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False, tools=tools),
+        ffmpeg.get_cmd_cropdetect(INPUT, tools=tools),
+        ffmpeg.get_cmd_ffprobe(INPUT, tools=tools),
+        ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0, tools=tools),
+        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1, copy=False, tools=tools),
     ]
 
 
@@ -53,20 +46,19 @@ class TestPlaceholders:
 
 
 class TestBinaryPaths:
-    def test_defaults_to_path_lookup(self, default_binaries):
+    def test_defaults_to_path_lookup(self):
         assert ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [])[0] == "ffmpeg"
         assert ffmpeg.get_cmd_ffprobe(INPUT)[0] == "ffprobe"
 
-    def test_ffmpeg_path_is_configurable(self, default_binaries):
-        config.ffmpeg_path = "/opt/ffmpeg/bin/ffmpeg"
-        for cmd in all_commands():
+    def test_ffmpeg_path_is_configurable(self):
+        for cmd in all_commands(FFmpegTools(ffmpeg="/opt/ffmpeg/bin/ffmpeg")):
             if cmd[0] != "ffprobe":
                 assert cmd[0] == "/opt/ffmpeg/bin/ffmpeg"
 
-    def test_ffprobe_path_is_configurable(self, default_binaries):
-        config.ffprobe_path = "/opt/ffmpeg/bin/ffprobe"
-        assert ffmpeg.get_cmd_ffprobe(INPUT)[0] == "/opt/ffmpeg/bin/ffprobe"
-        assert ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0)[0] == "/opt/ffmpeg/bin/ffprobe"
+    def test_ffprobe_path_is_configurable(self):
+        tools = FFmpegTools(ffprobe="/opt/ffmpeg/bin/ffprobe")
+        assert ffmpeg.get_cmd_ffprobe(INPUT, tools=tools)[0] == "/opt/ffmpeg/bin/ffprobe"
+        assert ffmpeg.get_cmd_ffprobe_tail(INPUT, 10.0, tools=tools)[0] == "/opt/ffmpeg/bin/ffprobe"
 
 
 class TestCommandContent:

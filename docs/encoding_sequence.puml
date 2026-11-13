@@ -1,112 +1,124 @@
 @startuml encoding_sequence
 
 title Encoding Sequence
-footer \nVersion 1.0
+footer \nVersion 2.0
 
 skinparam style strictuml
 skinparam backgroundColor #FFFFFE
 
+participant "Caller\n(Service / CLI)" as caller
 participant "Encoder" as encoder
 participant "Analyzer" as analyzer
-participant "FileInfo" as file_info
 participant "ffmpeg" as cmd
 participant "FFmpeg / FFprobe" as proc
 
+activate caller
+caller -> encoder : process(job, remux_only)
 activate encoder
 
-encoder -> analyzer : analyze(file_path)
+encoder -> encoder : signature of job.input_file\n(size + mtime)
+
+encoder -> analyzer : analyze(input_file)
 activate analyzer
-
-analyzer -> cmd : get_cmd_ffprobe(file_path)
-activate cmd
-cmd --> analyzer : cmd
-deactivate cmd
-
-analyzer -> proc : run ffprobe
+analyzer -> proc : ffprobe streams and format
 activate proc
-proc --> analyzer : streams, format (JSON)
+proc --> analyzer : JSON
 deactivate proc
-
-analyzer -> file_info : create
-activate file_info
-file_info -> file_info : resolve LocationConfig\nand SpecialDirs from path
-file_info --> analyzer : file_info
-deactivate file_info
-
+analyzer -> proc : ffprobe packets near the declared end
+activate proc
+proc --> analyzer : timestamps
+deactivate proc
+note right
+    No packet near the end:
+    an aborted copy, ""is_valid"" is False.
+end note
 analyzer -> analyzer : flag shall_encode per video / audio stream,\nshall_remux for the container
-analyzer -> analyzer : select_audio_tracks()\nconfigured languages in order,\noriginal for the original one
+analyzer -> analyzer : select audio tracks and subtitle streams
 analyzer --> encoder : file_info
 deactivate analyzer
+
+alt invalid file or unsupported target codec
+    encoder --> caller : raise InvalidFileError / EncodingError
+end
+
+opt remux_only
+    encoder -> encoder : copy every stream
+end
+
+encoder -> encoder : _check_free_space()
+note right
+    ""InsufficientSpaceError"" before anything
+    is written: the caller retries later.
+end note
 
 alt video or selected audio shall encode
     opt video shall encode
         encoder -> analyzer : detect_crop()\nkeyframes only, top / bottom bars
     end
-    encoder -> encoder : cap video bitrate at target,\ntarget when source is unknown
-    encoder -> encoder : video filters:\ncrop, scale to fit, tone map HDR
+    encoder -> encoder : cap the video bitrate in target codec terms,\nvideo filters: crop, scale to fit, tone map HDR
 
     alt video shall encode
-        encoder -> cmd : get_cmd_encode_movie_pass_1(...)
-        activate cmd
-        cmd --> encoder : cmd
-        deactivate cmd
-        encoder -> proc : run 1st pass
-        activate proc
-        proc --> encoder : progress on pipe:1
-        deactivate proc
-
+        opt first pass not kept from an earlier run
+            encoder -> cmd : get_cmd_encode_movie_pass_1(...)
+            encoder -> proc : run 1st pass
+            activate proc
+            proc --> encoder : passlogfiles/passlog*
+            deactivate proc
+            encoder -> encoder : fsync stats,\nwrite passlogfiles/pass1.json
+        end
         encoder -> cmd : get_cmd_encode_movie_pass_2(...)
-        activate cmd
-        cmd --> encoder : cmd
-        deactivate cmd
         encoder -> proc : run 2nd pass
         activate proc
-        proc --> encoder : encoded/<file>.mp4
+        proc --> encoder : encoded/<output name>
         deactivate proc
     else only audio shall encode
         encoder -> cmd : get_cmd_encode_audio(...)
-        activate cmd
-        cmd --> encoder : cmd
-        deactivate cmd
-        encoder -> proc : run audio encode, copy video
+        encoder -> proc : encode audio, copy video
         activate proc
-        proc --> encoder : encoded/<file>.mp4
+        proc --> encoder : encoded/<output name>
         deactivate proc
-    end
-
-    alt encoding failed
-        encoder -> encoder : _cleanup_workdirs()
-        note right
-            ""process()"" returns ""False"" - optimizing is skipped, the original
-            stays in place and the watcher skips it until it is modified.
-        end note
-        deactivate encoder
     end
 end
 
-encoder -> cmd : get_cmd_optimize(source, processed, lang, track_name)
-activate cmd
-cmd --> encoder : cmd
-deactivate cmd
-
-encoder -> proc : run optimize
+encoder -> cmd : get_cmd_optimize(...)
+encoder -> proc : remux, tag audio, +faststart
 activate proc
-proc --> encoder : _baycone_processed/<file>.mp4
+proc --> encoder : optimized/<output name>
 deactivate proc
 
-alt optimizing succeeded
-    encoder -> encoder : _archive_original()
+alt FFmpeg failed or stalled
+    encoder --> caller : raise EncodingError
+else input signature changed meanwhile
+    encoder --> caller : raise SourceChangedError
+end
+
+encoder -> encoder : _publish()
+note right
+    fsync, rename to ""job.output_file"", fsync the directory.
+    Across filesystems: a synced copy renamed into place.
+end note
+
+encoder -> encoder : _extract_subtitles()
+note right: A failure here only warns.
+
+encoder -> encoder : _cleanup_workdirs()
+note right: Always, in a ""finally"". The passlog is kept for a resume.
+
+encoder --> caller : job.output_file
+deactivate encoder
+
+opt caller is the service
+    caller -> caller : archive_original()
     note right
-        Moves the source to ""_baycone_originals/""
+        Moves the input to ""_baycone_originals/""
         and prunes only the directories it left empty.
     end note
 end
 
-encoder -> encoder : _cleanup_workdirs()
-
-note over encoder, proc
-    If interrupted (SIGTERM / Ctrl+C), the running ffmpeg is killed,
-    the work directories are cleared and the original stays in place.
+note over caller, proc
+    Every FFmpeg run is killed when neither its progress nor its output file moved
+    for 30 minutes. If interrupted (SIGTERM / Ctrl+C), the running FFmpeg is killed,
+    the work directories are cleared and the input stays in place.
 end note
 
 @enduml

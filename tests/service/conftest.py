@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from baycone.config import Constants, LocationConfig, config
+from baycone_service.config import Constants, LocationConfig, config
 
 LOCATION_NAME = "movies"
 

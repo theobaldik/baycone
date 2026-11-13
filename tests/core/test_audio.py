@@ -1,7 +1,7 @@
 import pytest
 
 from baycone.audio import AudioStream, AudioTrack, cap_bitrate, normalize_language, select_audio_tracks
-from baycone.config import LocationConfig
+from baycone.settings import EncodingSettings
 
 
 def stream(index: int, lang: str, channels: int = 2, **kwargs) -> AudioStream:
@@ -9,7 +9,7 @@ def stream(index: int, lang: str, channels: int = 2, **kwargs) -> AudioStream:
 
 
 def select(streams: list[AudioStream], languages: list[str] | None = None, channels: int = 2) -> list[AudioStream]:
-    location_config = LocationConfig(
+    location_config = EncodingSettings(
         target_audio_languages=["original", "eng", "cze"] if languages is None else languages,
         target_audio_channels=channels,
     )
@@ -170,25 +170,25 @@ class TestChannelSelection:
 
 class TestTrackOutput:
     def test_only_the_first_track_is_default(self):
-        tracks = select_audio_tracks([stream(0, "eng"), stream(1, "ces")], LocationConfig())
+        tracks = select_audio_tracks([stream(0, "eng"), stream(1, "ces")], EncodingSettings())
         assert [t.default for t in tracks] == [True, False]
 
     def test_tracks_within_limits_are_copied(self):
-        tracks = select_audio_tracks([stream(0, "eng", channel_bitrate=96)], LocationConfig())
+        tracks = select_audio_tracks([stream(0, "eng", channel_bitrate=96)], EncodingSettings())
         assert tracks[0].bitrate == 0
 
     def test_bitrate_is_per_channel_times_channels(self):
-        location_config = LocationConfig(target_audio_channel_bitrate=64, target_audio_channels=6)
+        location_config = EncodingSettings(target_audio_channel_bitrate=64, target_audio_channels=6)
         source = stream(0, "eng", channels=6, channel_bitrate=128, shall_encode=True)
         assert select_audio_tracks([source], location_config)[0].bitrate == 384
 
     def test_unknown_source_bitrate_falls_back_to_target(self):
-        location_config = LocationConfig(target_audio_channel_bitrate=64)
+        location_config = EncodingSettings(target_audio_channel_bitrate=64)
         source = stream(0, "eng", channels=2, shall_encode=True)
         assert select_audio_tracks([source], location_config)[0].bitrate == 128
 
     @pytest.mark.parametrize("codec,channel_bitrate,expected", [("opus", 48, 144), ("opus", 96, 192), ("ac3", 96, 124)])
     def test_bitrate_capped_as_aac_equivalent(self, codec, channel_bitrate, expected):
-        location_config = LocationConfig(target_audio_channel_bitrate=96)
+        location_config = EncodingSettings(target_audio_channel_bitrate=96)
         source = AudioStream(codec=codec, channels=2, channel_bitrate=channel_bitrate, shall_encode=True)
         assert select_audio_tracks([source], location_config)[0].bitrate == expected

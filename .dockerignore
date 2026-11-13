@@ -1,19 +1,22 @@
 # Whitelist: ignore the whole context, then re-include only what the image needs.
-# The Dockerfile copies exactly these: pyproject.toml, uv.lock, baycone/ and the
-# license/notice pair. Anything new (docs, samples, tests, .venv, .git, ...)
+# The Dockerfile copies exactly these: pyproject.toml, uv.lock, README.md, the three
+# packages and the license/notice pair. Anything new (docs, samples, tests, .venv, .git, ...)
 # stays out by default and has to be opted in here explicitly.
 
 *
 
 !pyproject.toml
 !uv.lock
+!README.md
 !baycone
+!baycone_cli
+!baycone_service
 !LICENSE
 !NOTICE
 
 # Re-exclude caches living inside the whitelisted source tree.
 # .dockerignore matches Go path patterns, not gitignore globs, so nested paths
 # need an explicit '**/'. The last matching pattern wins, so this must come
-# after the '!baycone' re-include above.
+# after the package re-includes above.
 **/__pycache__
 **/*.py[cod]

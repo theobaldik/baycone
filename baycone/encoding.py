@@ -1,4 +1,4 @@
-from copy import deepcopy
+import errno
 import logging
 import subprocess
 import json
@@ -7,9 +7,11 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from baycone import ffmpeg
 from baycone.audio import (
@@ -20,8 +22,9 @@ from baycone.audio import (
     normalize_language,
     select_audio_tracks,
 )
-from baycone.config import config, LocationConfig, SpecialDirs
+from baycone.errors import EncodingError, InsufficientSpaceError, InvalidFileError, SourceChangedError
 from baycone.files import Signature, file_signature, fsync, fsync_dir, write_atomic
+from baycone.settings import EncodingSettings, FFmpegTools
 from baycone.subtitles import SRT_CODECS, SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
 
 log = logging.getLogger(__name__)
@@ -41,8 +44,8 @@ STALL_SECONDS: float = 1800.0
 STALL_CHECK_SECONDS: float = 30.0
 
 
-class InsufficientSpaceError(Exception):
-    """Raised before anything is written, so the file can simply be tried again later."""
+# (step, percent) of the running FFmpeg step
+type ProgressCallback = Callable[[str, float], None]
 
 
 def _format_duration(seconds: float) -> str:
@@ -98,9 +101,7 @@ class VideoStream:
 
 class FileInfo:
     def __init__(self, file_path: Path, **kwargs) -> None:
-        self._file_path: Path = None
-        self._special_dirs: SpecialDirs = None
-        self._location_config: LocationConfig = None
+        self.file_path: Path = file_path
 
         self.is_valid: bool = kwargs.get("is_valid", False)
         self.shall_remux: bool = kwargs.get("shall_remux", False)
@@ -114,80 +115,83 @@ class FileInfo:
         self.subtitle_streams: list[SubtitleStream] = kwargs.get("subtitle_streams", [])
         self.subtitle_tracks: list[SubtitleStream] = kwargs.get("subtitle_tracks", [])
 
-        self.file_path = file_path
+
+@dataclass
+class Job:
+    """Where a file goes; with `work_dir` on another filesystem than `output_file`, publishing has to copy."""
+
+    PASSLOG_DIR = "passlogfiles"
+    ENCODED_DIR = "encoded"
+    OPTIMIZED_DIR = "optimized"
+
+    input_file: Path
+    output_file: Path
+    work_dir: Path
+    # Shown in the log instead of the file name
+    name: str = field(default="")
+
+    def __post_init__(self) -> None:
+        self.name = self.name or self.input_file.name
 
     @property
-    def location_config(self) -> LocationConfig:
-        return deepcopy(self._location_config)
+    def passlog_dir(self) -> Path:
+        return self.work_dir / self.PASSLOG_DIR
 
     @property
-    def special_dirs(self) -> SpecialDirs:
-        return self._special_dirs
+    def encoded_dir(self) -> Path:
+        return self.work_dir / self.ENCODED_DIR
 
     @property
-    def file_path(self) -> Path:
-        return self._file_path
-
-    @file_path.setter
-    def file_path(self, value: Path) -> None:
-        if value is None:
-            raise ValueError("'file_path' property cannot be set to None")
-
-        if not isinstance(value, Path):
-            raise TypeError("'file_path' property must be set to 'Path' object")
-
-        self._file_path = value
-
-        for lc in config.locations:
-            if value.is_relative_to(lc.abspath):
-                self._location_config = lc
-                self._special_dirs = SpecialDirs(lc.abspath)
-                break
-        else:
-            raise ValueError(f"No 'LocationConfig' found for '{value}'")
-
-    @property
-    def relative_path(self) -> Path:
-        return self.file_path.relative_to(self._special_dirs.root_dir)
+    def optimized_dir(self) -> Path:
+        """The finished file, before it is renamed to `output_file`."""
+        return self.work_dir / self.OPTIMIZED_DIR
 
     @property
     def passlog_path(self) -> Path:
         """A fixed name: x265 takes it inside `-x265-params`, where a ':' from a file name would end the value."""
-        return self._special_dirs.passlog_dir / "passlog"
+        return self.passlog_dir / "passlog"
 
     @property
     def first_pass_path(self) -> Path:
         """Marks the passlog as complete and tells which file and settings it belongs to."""
-        return self._special_dirs.passlog_dir / "pass1.json"
+        return self.passlog_dir / "pass1.json"
 
     @property
     def encoding_path(self) -> Path:
-        return self._special_dirs.encoded_dir / self.relative_path.with_suffix(self._location_config.target_extension)
+        return self.encoded_dir / self.output_file.name
 
     @property
     def optimized_path(self) -> Path:
-        return self._special_dirs.optimized_dir / self.relative_path.with_suffix(self._location_config.target_extension)
-
-    @property
-    def original_path(self) -> Path:
-        return self._special_dirs.originals_dir / self.relative_path
-
-    @property
-    def processed_path(self) -> Path:
-        return self._special_dirs.processed_dir / self.relative_path.with_suffix(self._location_config.target_extension)
+        return self.optimized_dir / self.output_file.name
 
     def subtitle_path(self, lang: str) -> Path:
-        return self.processed_path.with_suffix(f".{language_suffix(lang)}.srt")
+        return self.output_file.with_suffix(f".{language_suffix(lang)}.srt")
+
+    @staticmethod
+    def _clear(directory: Path) -> None:
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True, exist_ok=True)
+
+    def clear_workdirs(self) -> None:
+        """The passlog is not part of it: a finished first pass outlives an interrupted run."""
+        self._clear(self.encoded_dir)
+        self._clear(self.optimized_dir)
+
+    def clear_passlog(self) -> None:
+        self._clear(self.passlog_dir)
 
 
 class Analyzer:
 
-    @staticmethod
-    def _get_ffprobe_result(file_path: Path) -> dict | None:
+    def __init__(self, settings: EncodingSettings | None = None, tools: FFmpegTools = FFmpegTools()) -> None:
+        self._settings: EncodingSettings = deepcopy(settings) if settings else EncodingSettings()
+        self._tools: FFmpegTools = tools
+
+    def _get_ffprobe_result(self, file_path: Path) -> dict | None:
         if not file_path.is_file():
             return None
         try:
-            cmd = ffmpeg.get_cmd_ffprobe(file_path)
+            cmd = ffmpeg.get_cmd_ffprobe(file_path, tools=self._tools)
             result = subprocess.run(
                 cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=30
             )
@@ -198,12 +202,11 @@ class Analyzer:
             log.error(f"FFprobe failed for {file_path}: {e}")
         return None
 
-    @staticmethod
-    def _is_complete(file_path: Path, start_time: float, duration: float) -> bool:
+    def _is_complete(self, file_path: Path, start_time: float, duration: float) -> bool:
         """False for an aborted copy, whose header still declares the full duration."""
         end = start_time + duration
         try:
-            cmd = ffmpeg.get_cmd_ffprobe_tail(file_path, max(end - TAIL_SECONDS, start_time))
+            cmd = ffmpeg.get_cmd_ffprobe_tail(file_path, max(end - TAIL_SECONDS, start_time), tools=self._tools)
             result = subprocess.run(
                 cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=STALL_SECONDS
             )
@@ -232,18 +235,15 @@ class Analyzer:
         bitrate = stream.get("bit_rate") or stream.get("tags", {}).get("BPS")
         return int(_parse_number(bitrate)) // 1000
 
-    @staticmethod
-    def _get_file_info(file_path: Path) -> FileInfo:
-        probe_result = Analyzer._get_ffprobe_result(file_path)
+    def _get_file_info(self, file_path: Path) -> FileInfo:
+        probe_result = self._get_ffprobe_result(file_path)
 
         if not probe_result:
             return FileInfo(file_path=file_path, is_valid=False)
 
         format_info = probe_result.get("format", {})
         duration = _parse_number(format_info.get("duration"))
-        if duration > 0 and not Analyzer._is_complete(
-            file_path, _parse_number(format_info.get("start_time")), duration
-        ):
+        if duration > 0 and not self._is_complete(file_path, _parse_number(format_info.get("start_time")), duration):
             return FileInfo(file_path=file_path, is_valid=False)
 
         file_info = FileInfo(file_path=file_path, is_valid=True)
@@ -293,13 +293,12 @@ class Analyzer:
 
         return file_info
 
-    @staticmethod
-    def detect_crop(file_path: Path, video: VideoStream) -> None:
+    def detect_crop(self, file_path: Path, video: VideoStream) -> None:
         """Top and bottom bars only, the full width is always kept."""
         log.info("Detecting black bars...")
         try:
             result = subprocess.run(
-                ffmpeg.get_cmd_cropdetect(file_path),
+                ffmpeg.get_cmd_cropdetect(file_path, tools=self._tools),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -321,41 +320,52 @@ class Analyzer:
         else:
             log.info("No black bars detected")
 
-    @staticmethod
-    def analyze(file_path: Path) -> FileInfo:
-        file_info = Analyzer._get_file_info(file_path)
-        location_config = file_info.location_config
+    def analyze(self, file_path: Path) -> FileInfo:
+        """`is_valid` is False for a file that cannot be processed, nothing is raised."""
+        file_info = self._get_file_info(file_path)
+        settings = self._settings
 
-        if not any(c in location_config.allowed_containers for c in file_info.containers):
+        if not any(c in settings.allowed_containers for c in file_info.containers):
             file_info.shall_remux = True
 
         # An unknown bitrate cannot be checked against the limit, the encode then targets the configured one
         video = file_info.video_stream
         if (
-            video.codec not in location_config.allowed_video_codecs
-            or not 0 < video.h264_bitrate <= location_config.limit_video_bitrate
+            video.codec not in settings.allowed_video_codecs
+            or not 0 < video.h264_bitrate <= settings.limit_video_bitrate
             or video.pix_fmt not in ffmpeg.VIDEO_CODECS.get(video.codec, ffmpeg.VIDEO_CODECS["h264"]).pix_fmts
             or video.is_hdr
-            or video.width > location_config.limit_video_width
-            or video.height > location_config.limit_video_height
+            or video.width > settings.limit_video_width
+            or video.height > settings.limit_video_height
         ):
             video.shall_encode = True
 
         for stream in file_info.audio_streams:
-            if stream.codec not in location_config.allowed_audio_codecs:
+            if stream.codec not in settings.allowed_audio_codecs:
                 stream.shall_encode = True
-            if not 0 < stream.aac_channel_bitrate <= location_config.limit_audio_channel_bitrate:
+            if not 0 < stream.aac_channel_bitrate <= settings.limit_audio_channel_bitrate:
                 stream.shall_encode = True
 
-        file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, location_config)
-        file_info.subtitle_tracks = select_subtitle_streams(file_info.subtitle_streams, location_config)
+        file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, settings)
+        file_info.subtitle_tracks = select_subtitle_streams(file_info.subtitle_streams, settings)
 
         return file_info
 
 
 class Encoder:
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        settings: EncodingSettings | None = None,
+        tools: FFmpegTools = FFmpegTools(),
+        on_progress: ProgressCallback | None = None,
+    ) -> None:
+        self._settings: EncodingSettings = deepcopy(settings) if settings else EncodingSettings()
+        self._tools: FFmpegTools = tools
+        self._on_progress: ProgressCallback | None = on_progress
+        self._analyzer: Analyzer = Analyzer(self._settings, tools)
+
+        self._job: Job | None = None
         self._processing_file: FileInfo | None = None
         self._signature: Signature | None = None
 
@@ -363,23 +373,27 @@ class Encoder:
         self._out_time: int = 0
         self._stalled: bool = False
 
-    def process(self, file_path: Path) -> bool:
-        """Raises `InsufficientSpaceError` when the file has to wait for free space."""
+    def process(self, job: Job, remux_only: bool = False) -> Path:
+        """Returns `job.output_file`. The input file is never modified; on failure no output is left behind.
+
+        Raises `InsufficientSpaceError` (before writing anything) when the file has to wait for free space,
+        another `BayconeError` when it cannot be processed.
+        """
+        file_path = job.input_file
+        self._job = job
         self._signature = file_signature(file_path)
-        self._processing_file = Analyzer.analyze(file_path)
+        self._processing_file = self._analyzer.analyze(file_path)
 
         try:
             if not self._processing_file.is_valid:
-                log.error(f"Processing aborted: Invalid file '{file_path}'")
-                return False
+                raise InvalidFileError(f"Invalid file '{file_path}'")
 
-            codec = self._processing_file.location_config.target_video_codec
+            codec = self._settings.target_video_codec
             if codec not in ffmpeg.VIDEO_CODECS:
-                log.error(
-                    f"Processing aborted: Unsupported target_video_codec '{codec}',"
-                    f" use one of {list(ffmpeg.VIDEO_CODECS)}"
-                )
-                return False
+                raise EncodingError(f"Unsupported target_video_codec '{codec}', use one of {list(ffmpeg.VIDEO_CODECS)}")
+
+            if remux_only:
+                self._copy_all_streams()
 
             # A container mismatch or dropped audio tracks alone are fixed by the remux in `_optimize`
             shall_encode = self._processing_file.video_stream.shall_encode or any(
@@ -387,39 +401,39 @@ class Encoder:
             )
             self._check_free_space(shall_encode)
 
-            log.info(
-                f"Processing '{self._processing_file.relative_path}'"
-                f" ({_format_duration(self._processing_file.duration)})"
-            )
+            log.info(f"Processing '{job.name}' ({_format_duration(self._processing_file.duration)})")
             # Decodes keyframes of the whole file, only worth it when the video is encoded anyway
             if self._processing_file.video_stream.shall_encode:
-                Analyzer.detect_crop(file_path, self._processing_file.video_stream)
+                self._analyzer.detect_crop(file_path, self._processing_file.video_stream)
             self._log_plan()
 
             if not shall_encode and self._processing_file.shall_remux:
                 log.info(f"Only the container differs, remuxing '{file_path}'")
 
-            # The original stays in place unless the whole chain succeeds
             if shall_encode and not self._encode():
-                log.error(f"Processing aborted: Encoding failed for '{file_path}'")
-                return False
+                raise EncodingError(f"Encoding failed for '{file_path}'")
 
             if not self._optimize(shall_encode):
-                log.error(f"Processing aborted: Optimizing failed for '{file_path}'")
-                return False
+                raise EncodingError(f"Optimizing failed for '{file_path}'")
 
             # A copy that was still running, or a file replaced or deleted meanwhile
             if file_signature(file_path) != self._signature:
-                log.warning(f"Processing aborted: '{file_path}' changed while it was processed")
-                return False
+                raise SourceChangedError(f"'{file_path}' changed while it was processed")
 
             self._publish()
             self._extract_subtitles()
-            self._archive_original()
-            return True
+            return job.output_file
         finally:
             self._cleanup_workdirs()
             self._processing_file = None
+            self._job = None
+
+    def _copy_all_streams(self) -> None:
+        file_info = self._processing_file
+        file_info.video_stream.shall_encode = False
+        for track in file_info.audio_tracks:
+            track.stream.shall_encode = False
+            track.bitrate = 0
 
     def _required_space(self, shall_encode: bool) -> int:
         """In bytes. The encoded and the optimized file exist side by side, hence twice the output when encoding."""
@@ -434,13 +448,13 @@ class Encoder:
         return size * 2 if shall_encode else size
 
     def _check_free_space(self, shall_encode: bool) -> None:
-        file_info = self._processing_file
-        if not file_info.location_config.check_free_space:
+        if not self._settings.check_free_space:
             return
 
-        root_dir = file_info.special_dirs.root_dir
+        work_dir = self._job.work_dir
         try:
-            usage = shutil.disk_usage(root_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            usage = shutil.disk_usage(work_dir)
         except OSError:
             return
         # Filesystems that cannot tell their free space report an empty disk
@@ -450,21 +464,19 @@ class Encoder:
         required = self._required_space(shall_encode)
         if usage.free < required:
             raise InsufficientSpaceError(
-                f"'{file_info.file_path}' needs {_format_size(required)},"
-                f" '{root_dir}' has {_format_size(usage.free)} free"
+                f"'{self._job.input_file}' needs {_format_size(required)},"
+                f" '{work_dir}' has {_format_size(usage.free)} free"
             )
 
     def _target_video_bitrate(self) -> int:
         """`target_video_bitrate` is in kbps of the target codec, so the source is capped in its terms too."""
-        location_config = self._processing_file.location_config
-        efficiency = H264_EFFICIENCY.get(location_config.target_video_codec, 1.0)
+        efficiency = H264_EFFICIENCY.get(self._settings.target_video_codec, 1.0)
         source = int(self._processing_file.video_stream.h264_bitrate / efficiency)
-        return cap_bitrate(source, location_config.target_video_bitrate)
+        return cap_bitrate(source, self._settings.target_video_bitrate)
 
     def _video_filters(self) -> dict[str, str]:
         """Description -> ffmpeg filter, in the order they apply."""
         video = self._processing_file.video_stream
-        location_config = self._processing_file.location_config
         filters = {}
 
         height = video.height
@@ -473,7 +485,7 @@ class Encoder:
             filters[f"crop to {video.width}x{height}"] = ffmpeg.get_filter_crop(height, video.crop_top)
 
         # Never upscales; scaling before tone mapping leaves fewer pixels for the expensive float conversion
-        box_width, box_height = location_config.limit_video_width, location_config.limit_video_height
+        box_width, box_height = self._settings.limit_video_width, self._settings.limit_video_height
         if video.width > box_width or height > box_height:
             filters[f"scale to fit {box_width}x{box_height}"] = ffmpeg.get_filter_scale(box_width, box_height)
 
@@ -488,7 +500,7 @@ class Encoder:
         source = f"{video.codec} {video.width}x{video.height}{' HDR' if video.is_hdr else ''}"
         action = "copy"
         if video.shall_encode:
-            codec = file_info.location_config.target_video_codec
+            codec = self._settings.target_video_codec
             action = f"encode to {codec} {_format_bitrate(self._target_video_bitrate())}"
             if filters := self._video_filters():
                 action += f" ({', '.join(filters)})"
@@ -504,17 +516,19 @@ class Encoder:
         dropped = len(file_info.audio_streams) - len(file_info.audio_tracks)
         log.info(f"Audio: {', '.join(tracks) or 'none'}; {dropped} track(s) dropped")
 
-        if file_info.location_config.target_subtitle_languages:
+        if self._settings.target_subtitle_languages:
             languages = [s.lang for s in file_info.subtitle_tracks]
             log.info(f"Subtitles: {', '.join(languages) or 'none'} extracted")
 
     def _log_progress(self, process: subprocess.Popen, step: str) -> None:
-        name = self._processing_file.relative_path
+        """Each update goes to `on_progress`, every ten percent to the log at DEBUG level."""
+        name = self._job.name
         duration = self._processing_file.duration
         started = time.monotonic()
         percent = 0
 
-        log.info(f"'{name}' {step}: 0 %")
+        log.debug(f"'{name}' {step}: 0 %")
+        self._report(step, 0.0)
 
         # Drain the pipe even without a duration, otherwise FFmpeg blocks on a full pipe
         for line in process.stdout:
@@ -525,11 +539,16 @@ class Encoder:
             self._out_time = int(value)
 
             if duration:
-                out_percent = self._out_time / 10_000 / duration
+                out_percent = min(self._out_time / 10_000 / duration, 100.0)
+                self._report(step, out_percent)
                 if out_percent >= percent + 10:
                     percent = int(out_percent // 10) * 10
                     eta = (time.monotonic() - started) * max(100 - out_percent, 0) / out_percent
-                    log.info(f"'{name}' {step}: {percent} %, ETA {_format_duration(eta)}")
+                    log.debug(f"'{name}' {step}: {percent} %, ETA {_format_duration(eta)}")
+
+    def _report(self, step: str, percent: float) -> None:
+        if self._on_progress:
+            self._on_progress(step, percent)
 
     def _kill_when_stalled(self, process: subprocess.Popen, output_file: Path | None, done: threading.Event) -> None:
         """The output file counts too: moving the index to the front (faststart) rewrites it without any progress."""
@@ -570,41 +589,42 @@ class Encoder:
         log.info(f"{step} finished in {_format_duration(time.monotonic() - started)}")
 
     def _encode(self) -> bool:
-        file_info = self._processing_file
+        file_info, job = self._processing_file, self._job
 
         if not file_info.is_valid:
             log.error(f"Encoding skipped: Invalid file for encoding: '{file_info.file_path}'")
             return False
 
-        codec = file_info.location_config.target_video_codec
+        codec = self._settings.target_video_codec
         video_bitrate = self._target_video_bitrate()
         video_filters = list(self._video_filters().values())
 
-        file_info.encoding_path.parent.mkdir(parents=True, exist_ok=True)
+        job.encoding_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             if file_info.video_stream.shall_encode:
                 pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(
-                    file_info.file_path, file_info.passlog_path, codec, video_bitrate, video_filters
+                    file_info.file_path, job.passlog_path, codec, video_bitrate, video_filters, tools=self._tools
                 )
                 pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(
                     file_info.file_path,
-                    file_info.encoding_path,
-                    file_info.passlog_path,
+                    job.encoding_path,
+                    job.passlog_path,
                     codec,
                     video_bitrate,
                     video_filters,
                     file_info.audio_tracks,
+                    tools=self._tools,
                 )
 
                 resumed = self._is_first_pass_done(pass_1)
                 if resumed:
-                    log.info(f"First pass of '{file_info.relative_path}' was finished earlier, resuming")
+                    log.info(f"First pass of '{job.name}' was finished earlier, resuming")
                 else:
                     self._first_pass(pass_1)
 
                 try:
-                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", file_info.encoding_path)
+                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", job.encoding_path)
                 except subprocess.CalledProcessError as e:
                     if not resumed:
                         raise
@@ -613,14 +633,16 @@ class Encoder:
                         f"2nd pass failed on the first pass kept from an earlier run, starting over: {e.stderr}"
                     )
                     self._first_pass(pass_1)
-                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", file_info.encoding_path)
+                    self._run_ffmpeg(pass_2, "Encoding 2nd pass", job.encoding_path)
 
-                file_info.special_dirs.clear_passlog()
+                job.clear_passlog()
             else:
-                cmd = ffmpeg.get_cmd_encode_audio(file_info.file_path, file_info.encoding_path, file_info.audio_tracks)
-                self._run_ffmpeg(cmd, "Encoding audio", file_info.encoding_path)
+                cmd = ffmpeg.get_cmd_encode_audio(
+                    file_info.file_path, job.encoding_path, file_info.audio_tracks, tools=self._tools
+                )
+                self._run_ffmpeg(cmd, "Encoding audio", job.encoding_path)
 
-            log.info(f"Encoded file saved to '{file_info.encoding_path}'")
+            log.info(f"Encoded file saved to '{job.encoding_path}'")
             return True
 
         except subprocess.CalledProcessError as e:
@@ -634,41 +656,42 @@ class Encoder:
 
     def _is_first_pass_done(self, cmd: list[str]) -> bool:
         try:
-            marker = json.loads(self._processing_file.first_pass_path.read_text(encoding="utf-8"))
+            marker = json.loads(self._job.first_pass_path.read_text(encoding="utf-8"))
         except OSError, ValueError:
             return False
         return marker == self._first_pass_key(cmd)
 
     def _first_pass(self, cmd: list[str]) -> None:
-        file_info = self._processing_file
-        file_info.special_dirs.clear_passlog()
+        job = self._job
+        job.clear_passlog()
         self._run_ffmpeg(cmd, "Encoding 1st pass")
 
         # Synced before they are declared complete, a power loss must not leave the marker with half the stats
-        for stats_file in file_info.special_dirs.passlog_dir.iterdir():
+        for stats_file in job.passlog_dir.iterdir():
             fsync(stats_file)
-        write_atomic(file_info.first_pass_path, json.dumps(self._first_pass_key(cmd)))
+        write_atomic(job.first_pass_path, json.dumps(self._first_pass_key(cmd)))
 
     def _optimize(self, encoded: bool) -> bool:
-        """Into a work directory: the library only ever gets the finished file, see `_publish`."""
-        self._processing_file.optimized_path.parent.mkdir(parents=True, exist_ok=True)
+        """Into a work directory: the output path only ever gets the finished file, see `_publish`."""
+        file_info, job = self._processing_file, self._job
+        job.optimized_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = ffmpeg.get_cmd_optimize(
-            self._processing_file.encoding_path if encoded else self._processing_file.file_path,
-            self._processing_file.optimized_path,
-            self._processing_file.audio_tracks,
+            job.encoding_path if encoded else file_info.file_path,
+            job.optimized_path,
+            file_info.audio_tracks,
             encoded,
+            tools=self._tools,
         )
 
         try:
-            self._run_ffmpeg(cmd, "Optimizing", self._processing_file.optimized_path)
+            self._run_ffmpeg(cmd, "Optimizing", job.optimized_path)
             return True
         except subprocess.CalledProcessError as e:
             log.error(
-                f"FFmpeg optimization failed for '{self._processing_file.file_path}'"
-                f" with exit code {e.returncode}: {e.stderr}"
+                f"FFmpeg optimization failed for '{file_info.file_path}' with exit code {e.returncode}: {e.stderr}"
             )
         except Exception as e:
-            log.error(f"Unexpected error during FFmpeg optimization for {self._processing_file.file_path}: {e}")
+            log.error(f"Unexpected error during FFmpeg optimization for {file_info.file_path}: {e}")
 
         return False
 
@@ -677,10 +700,10 @@ class Encoder:
         file_info = self._processing_file
 
         for stream in file_info.subtitle_tracks:
-            path = file_info.subtitle_path(stream.lang)
+            path = self._job.subtitle_path(stream.lang)
             try:
                 cmd = ffmpeg.get_cmd_extract_subtitle(
-                    file_info.file_path, path, stream.index, stream.codec in SRT_CODECS
+                    file_info.file_path, path, stream.index, stream.codec in SRT_CODECS, tools=self._tools
                 )
                 self._run_ffmpeg(cmd, "Subtitles", path)
                 ensure_utf8(path)
@@ -690,53 +713,29 @@ class Encoder:
                 path.unlink(missing_ok=True)
 
     def _publish(self) -> None:
-        """Synced before the rename, so the original is only ever archived for an output that is safely on disk."""
-        source_path = self._processing_file.optimized_path
-        target_path = self._processing_file.processed_path
+        """Synced before the rename, so a caller archiving the input does so only for an output safely on disk."""
+        source_path = self._job.optimized_path
+        target_path = self._job.output_file
 
         fsync(source_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.replace(target_path)
+        try:
+            source_path.replace(target_path)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            # Another filesystem: a synced copy is renamed into place, so the output is never seen half-written
+            temp_path = target_path.with_name(f".{target_path.name}.tmp")
+            shutil.copyfile(source_path, temp_path)
+            fsync(temp_path)
+            temp_path.replace(target_path)
+            source_path.unlink()
         fsync_dir(target_path.parent)
         log.info(f"Processed file saved to '{target_path}'")
-
-    @staticmethod
-    def _free_path(path: Path) -> Path:
-        """`path`, or `<stem>.<n><suffix>` when it is taken."""
-        candidate, number = path, 0
-        while candidate.exists():
-            number += 1
-            candidate = path.with_stem(f"{path.stem}.{number}")
-        return candidate
-
-    @staticmethod
-    def _remove_empty_dirs(directory: Path, root_dir: Path) -> None:
-        """Stops at `root_dir` (exclusive) or the first non-empty directory."""
-        while directory != root_dir and directory.is_relative_to(root_dir):
-            try:
-                # Fails on non-empty directories, so unprocessed files are never removed
-                directory.rmdir()
-            except OSError:
-                return
-            log.info(f"Removed empty directory '{directory}'")
-            directory = directory.parent
-
-    def _archive_original(self) -> None:
-        source_path = self._processing_file.file_path
-        # An earlier original of the same name is kept, a rename would silently replace it
-        target_path = self._free_path(self._processing_file.original_path)
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.rename(target_path)
-        fsync_dir(target_path.parent)
-        fsync_dir(source_path.parent)
-        log.info(f"File '{source_path}' moved to '{target_path}'")
-
-        self._remove_empty_dirs(source_path.parent, self._processing_file.special_dirs.root_dir)
 
     def _cleanup_workdirs(self) -> None:
         """Must not raise: it runs in a `finally` and would turn a finished file into a failed one."""
         try:
-            self._processing_file.special_dirs.clear_workdirs()
+            self._job.clear_workdirs()
         except OSError as e:
             log.warning(f"Work directories could not be cleaned up: {e}")

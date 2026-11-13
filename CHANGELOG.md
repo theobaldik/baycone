@@ -2,9 +2,29 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Run the service with `baycone-service` or `python -m baycone_service` instead of `python -m baycone`
+- **Breaking:** Rebuild `baycone-cli` on the service's pipeline, with new flags: `--output`, `--work-dir`,
+  repeatable `-l` selecting audio languages, `--codec`, `--subtitles`, `--remux-only`, `--info` printing JSON,
+  `--ffmpeg` and `--ffprobe`
+- Split the code into the `baycone` core library, the `baycone_cli` command and the `baycone_service` service
+
+### Added
+
+- Add a Python API (`Encoder`, `Analyzer`, `Job`, `EncodingSettings`) to use the pipeline from other projects
+- Add the `baycone-cli` and `baycone-service` console scripts, installable with `uv tool install` or as a dependency
+- Publish across filesystems by copying the finished file into place when a rename is not possible
+
 ### Removed
 
 - Drop the `pycountry` dependency, replaced by built-in ISO 639 language code tables
+
+### Fixed
+
+- Keep the audio tracks of the selected languages in the CLI instead of relabeling the first track with `-l`
+- Write the CLI's output to a work directory first, so a crash never leaves a half-written file behind
+- Flush files to disk on Windows, where publishing failed with `Bad file descriptor`
 
 ## [0.6.0] - 2026-11-11
 

@@ -4,16 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baycone.__main__ import Service
-from baycone.config import Constants, config
-from baycone.encoding import InsufficientSpaceError
-from baycone.watcher import FileChangeTracker
+from baycone_service.service import Service
+from baycone_service.config import Constants, config
+from baycone.errors import InsufficientSpaceError
+from baycone_service.watcher import FileChangeTracker
 
 
 @pytest.fixture
 def service() -> Service:
     service = Service()
-    service._encoder = MagicMock()
+    service._process_file = MagicMock()
     return service
 
 
@@ -32,12 +32,12 @@ class TestProcessNext:
     def test_idle_when_no_file_found(self, service):
         service._watchers = [make_watcher()]
         assert service._process_next() is False
-        service._encoder.process.assert_not_called()
+        service._process_file.assert_not_called()
 
     def test_successful_file_is_not_marked_failed(self, service, tmp_path):
         watcher = make_watcher(tmp_path / "movie.mp4")
         service._watchers = [watcher]
-        service._encoder.process.return_value = True
+        service._process_file.return_value = True
         assert service._process_next() is True
         watcher.finish.assert_called_once_with(tmp_path / "movie.mp4", False)
 
@@ -45,7 +45,7 @@ class TestProcessNext:
         video = tmp_path / "movie.mp4"
         watcher = make_watcher(video)
         service._watchers = [watcher]
-        service._encoder.process.return_value = False
+        service._process_file.return_value = False
         service._process_next()
         watcher.finish.assert_called_once_with(video, True)
 
@@ -53,7 +53,7 @@ class TestProcessNext:
         video = tmp_path / "movie.mp4"
         watcher = make_watcher(video)
         service._watchers = [watcher]
-        service._encoder.process.side_effect = OSError("disk full")
+        service._process_file.side_effect = OSError("disk full")
         service._process_next()
         watcher.finish.assert_called_once_with(video, True)
 
@@ -61,7 +61,7 @@ class TestProcessNext:
         video = tmp_path / "movie.mp4"
         watcher = make_watcher(video)
         service._watchers = [watcher]
-        service._encoder.process.side_effect = InsufficientSpaceError("needs 10.0 GiB")
+        service._process_file.side_effect = InsufficientSpaceError("needs 10.0 GiB")
         assert service._process_next() is True
         watcher.pause.assert_called_once()
         watcher.finish.assert_called_once_with(video, False)
@@ -69,7 +69,7 @@ class TestProcessNext:
     def test_other_locations_carry_on_while_one_waits_for_space(self, service, tmp_path):
         waiting, other = make_watcher(tmp_path / "big.mp4"), make_watcher(tmp_path / "small.mp4")
         service._watchers = [waiting, other]
-        service._encoder.process.side_effect = [InsufficientSpaceError("needs 10.0 GiB"), True]
+        service._process_file.side_effect = [InsufficientSpaceError("needs 10.0 GiB"), True]
         service._process_next()
         other.finish.assert_called_once_with(tmp_path / "small.mp4", False)
 
@@ -78,7 +78,7 @@ class TestProcessNext:
         video = tmp_path / "movie.mp4"
         watcher = make_watcher(video)
         service._watchers = [watcher]
-        service._encoder.process.side_effect = KeyboardInterrupt
+        service._process_file.side_effect = KeyboardInterrupt
         with pytest.raises(KeyboardInterrupt):
             service._process_next()
         watcher.finish.assert_called_once_with(video, False)
@@ -98,7 +98,7 @@ class TestMainLoop:
         with (
             patch.object(service, "_reload_config"),
             patch.object(service, "_process_next", side_effect=process_next),
-            patch("baycone.__main__.time.sleep") as mock_sleep,
+            patch("baycone_service.service.time.sleep") as mock_sleep,
         ):
             service.main_loop()
         mock_sleep.assert_called_once()
@@ -118,7 +118,7 @@ class TestMainLoop:
         with (
             patch.object(service, "_reload_config"),
             patch.object(service, "_process_next", side_effect=process_next) as mock_process,
-            patch("baycone.__main__.time.sleep") as mock_sleep,
+            patch("baycone_service.service.time.sleep") as mock_sleep,
         ):
             service.main_loop()
         assert mock_process.call_count == 3
@@ -145,7 +145,7 @@ class TestMainLoop:
         with (
             patch.object(service, "_reload_config") as mock_reload,
             patch.object(service, "_process_next", side_effect=process_next),
-            patch("baycone.__main__.time.sleep"),
+            patch("baycone_service.service.time.sleep"),
         ):
             service.main_loop()
         assert mock_reload.call_count == 3
@@ -208,7 +208,7 @@ class TestReloadConfig:
         defaults = config.defaults
         config_file.write_text("defaults:\n  target_video_bitrate: 777\nlocations:\n  - path: shows\n")
         bump_mtime(config_file)
-        with patch("baycone.__main__.DirWatcher", side_effect=PermissionError("read-only")):
+        with patch("baycone_service.service.DirWatcher", side_effect=PermissionError("read-only")):
             service._reload_config()
         assert [lc.path for lc in config.locations] == ["movies"]
         assert config.defaults is defaults

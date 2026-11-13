@@ -3,10 +3,10 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from baycone import config
-from baycone.config import Constants, LocationConfig, SpecialDirs
 from baycone.files import Signature, file_signature
-from baycone.state import State
+from baycone_service import config
+from baycone_service.config import Constants, LocationConfig, SpecialDirs
+from baycone_service.state import State
 
 log = logging.getLogger(__name__)
 

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from baycone.config import Constants
-from baycone.watcher import MAX_ATTEMPTS, PAUSE_SECONDS, DirWatcher, FileChangeTracker
+from baycone_service.config import Constants
+from baycone_service.watcher import MAX_ATTEMPTS, PAUSE_SECONDS, DirWatcher, FileChangeTracker
 
 
 @pytest.fixture
@@ -285,9 +285,9 @@ class TestPause:
         video = location_dir / "movie.mp4"
         video.touch()
         settled(watcher)
-        with patch("baycone.watcher.time.monotonic", return_value=1000.0):
+        with patch("baycone_service.watcher.time.monotonic", return_value=1000.0):
             watcher.pause()
-        with patch("baycone.watcher.time.monotonic", return_value=1000.0 + PAUSE_SECONDS):
+        with patch("baycone_service.watcher.time.monotonic", return_value=1000.0 + PAUSE_SECONDS):
             assert watcher.get_new_file() == video
 
     def test_changed_override_ends_the_pause(self, watcher, location_dir):

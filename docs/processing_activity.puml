@@ -1,7 +1,7 @@
 @startuml processing_activity
 
 title Processing Activity
-footer Version 1.0
+footer Version 2.0
 
 start
 :Scan Watch Directory;
@@ -22,38 +22,53 @@ if (supported file found) then (yes)
         :Skip file until it is modified;
         stop
     endif
+    if (service died on it ""MAX_ATTEMPTS"" times) then (no)
+    else (yes)
+        :Mark File Failed;
+        stop
+    endif
 else (no)
     :Sleep ""poll_interval"";
     stop
 endif
 
+:Record Attempt in ""state.json"";
+
 :Analyze File;
 note right
-    ""ffprobe"" - container, codecs,
-    bitrates, channels, duration.
-    Select audio tracks: configured
-    languages in order, ""original""
-    for the original one.
+    ""ffprobe"" - container, codecs, bitrates,
+    channels, duration; packets near the
+    declared end prove the copy is complete.
+    Select audio tracks and subtitle streams.
 end note
+
+if (valid and target codec supported) then (yes)
+else (no)
+    :Mark File Failed;
+    note right: Original is left in place and retried once modified.
+    stop
+endif
+
+if (enough free space) then (yes)
+else (no)
+    :Pause Location;
+    note right: Nothing written, the file is not failed.
+    stop
+endif
 
 if (video or selected audio outside limits) then (yes)
     if (video outside limits) then (yes)
-        :Encode File 1<sup>st</sup> Pass;
-        note right: "".baycone/passlogfiles/<relative path>""
+        :Detect Black Bars;
+        if (first pass kept from an earlier run) then (no)
+            :Encode File 1<sup>st</sup> Pass;
+            note right: "".baycone/passlogfiles/""
+        else (yes)
+        endif
         :Encode File 2<sup>nd</sup> Pass;
-        note right: "".baycone/encoded/<relative path>.mp4""
+        note right: "".baycone/encoded/<name>.mp4""
     else (no)
         :Encode Audio, Copy Video;
-        note right: Single pass, "".baycone/encoded/<relative path>.mp4""
-    endif
-
-    if (encoding succeeded) then (yes)
-    else (no)
-        :Log error;
-        :Clear Work Directories;
-        :Mark File Failed;
-        note right: Original is left in place and retried once modified.
-        stop
+        note right: Single pass, "".baycone/encoded/<name>.mp4""
     endif
 else (no)
     note right: A container mismatch or dropped audio tracks alone are fixed by the remux below.
@@ -64,19 +79,31 @@ note right
     Remux with ""-c copy"", strip metadata,
     tag the audio tracks and move the moov
     atom to the front (""+faststart"").
+    "".baycone/optimized/<name>.mp4""
 end note
 
-if (optimizing succeeded) then (yes)
+if (encoding and optimizing succeeded\nand the source is unchanged) then (yes)
 else (no)
-    :Log error;
     :Clear Work Directories;
     :Mark File Failed;
     note right: Original is left in place and retried once modified.
     stop
 endif
 
+:Publish;
+note right
+    fsync, rename to ""_baycone_processed/<relative path>.mp4"",
+    fsync the directory.
+end note
+
+:Extract Subtitles;
+note right: To ""<name>.<lang>.srt"" next to the output; a failure only warns.
+
+:Clear Work Directories;
+note right: encoded/ and optimized/; the passlog only after a finished encode.
+
 :Move Original to Originals;
-note right: ""_baycone_originals/<relative path>""
+note right: ""_baycone_originals/<relative path>"", never overwriting.
 
 :Remove Directories Left Empty;
 note right
@@ -84,8 +111,7 @@ note right
     Directories still holding files are kept.
 end note
 
-:Clear Work Directories;
-note right: passlogfiles/ and encoded/
+:Clear Attempt in ""state.json"";
 
 :Scan again without sleeping;
 

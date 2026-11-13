@@ -1,6 +1,6 @@
 import pytest
 
-from baycone.config import LocationConfig
+from baycone.settings import EncodingSettings
 from baycone.subtitles import SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
 
 
@@ -9,7 +9,7 @@ def stream(index: int, lang: str, codec: str = "subrip", **kwargs) -> SubtitleSt
 
 
 def select(streams: list[SubtitleStream], languages: list[str]) -> list[int]:
-    location_config = LocationConfig(target_subtitle_languages=languages)
+    location_config = EncodingSettings(target_subtitle_languages=languages)
     return [s.index for s in select_subtitle_streams(streams, location_config)]
 
 

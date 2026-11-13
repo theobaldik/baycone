@@ -18,6 +18,19 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[project.scripts]
+baycone-cli = "baycone_cli.cli:main"
+baycone-service = "baycone_service.service:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+# Three import packages in one distribution; a later split into a uv workspace is a folder move
+[tool.uv.build-backend]
+module-name = ["baycone", "baycone_cli", "baycone_service"]
+module-root = ""
+
 [tool.black]
 line-length = 120
 target-version = ['py314']
