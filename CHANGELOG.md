@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.0] - 2026-11-13
 
 ### Changed
 
@@ -150,6 +150,7 @@ _Initial release._
 - Add PlantUML architecture and behavior diagrams in `docs/`
 - Add MIT license
 
+[0.7.0]: https://github.com/theobaldik/baycone/releases/tag/v0.7.0
 [0.6.0]: https://github.com/theobaldik/baycone/releases/tag/v0.6.0
 [0.5.1]: https://github.com/theobaldik/baycone/releases/tag/v0.5.1
 [0.5.0]: https://github.com/theobaldik/baycone/releases/tag/v0.5.0

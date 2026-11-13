@@ -10,7 +10,7 @@ members = [
 
 [[package]]
 name = "baycone"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "charset-normalizer" },
@@ -35,7 +35,7 @@ dev = [
 
 [[package]]
 name = "baycone-service"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "service" }
 dependencies = [
     { name = "baycone" },

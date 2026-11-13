@@ -22,7 +22,7 @@ Source, configuration reference and documentation: https://github.com/theobaldik
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.6.0
+    image: theobaldik/baycone:0.7.0
     user: "1000:1000"
     # Comes back after a crash or a reboot; interrupted files are picked up again
     restart: unless-stopped
