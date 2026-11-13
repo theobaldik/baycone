@@ -15,7 +15,8 @@ def file_signature(file_path: Path) -> Signature | None:
 
 
 def fsync(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+    # Windows only flushes a handle opened for writing
+    fd = os.open(path, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
