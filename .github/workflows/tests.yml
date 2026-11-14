@@ -15,7 +15,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           # Track the uv version that maintains uv.lock, like the Dockerfile.
-          version: "0.13.7"
+          version: "0.13.8"
           python-version: "3.14"
           enable-cache: true
 

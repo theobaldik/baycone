@@ -271,7 +271,7 @@ Image tags use the plain version with no `v` prefix (`theobaldik/baycone:0.1.0`)
 
 - Both base images are pinned to a patch version **and** a multi-arch index digest. Bump them deliberately; never loosen
   a pin back to a floating tag like `:latest`.
-- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.13.7`), as must the one in
+- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.13.8`), as must the one in
   `.github/workflows/tests.yml`.
 - The image runs as **uid/gid 1000, non-root** (`USER 1000:1000`). Anything the container writes goes into a
   bind-mounted library, so never add build steps that require root at runtime; hosts with different ids override
