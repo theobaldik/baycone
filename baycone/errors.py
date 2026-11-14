@@ -1,3 +1,6 @@
+"""Errors raised by `Encoder.process()`."""
+
+
 class BayconeError(Exception):
     """A file that could not be processed; the input file is left untouched."""
 

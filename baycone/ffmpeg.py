@@ -1,3 +1,5 @@
+"""ffmpeg and ffprobe command lines, rendered from templates. Internal to `Analyzer` and `Encoder`."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,6 +123,8 @@ X265_PARAMS_MOVIE_PASS_2 = [
 
 @dataclass(frozen=True)
 class VideoCodec:
+    """Everything specific to one `target_video_codec`."""
+
     encoder: str
     pix_fmts: tuple[str, ...]  # the first is encoded to, all are kept when copying
     pass_1: list[str]

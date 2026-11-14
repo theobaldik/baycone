@@ -1,3 +1,5 @@
+"""Selection of text subtitles and their conversion to UTF-8."""
+
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,8 @@ SRT_CODECS = {"subrip", "srt"}
 
 @dataclass
 class SubtitleStream:
+    """A probed subtitle stream."""
+
     index: int  # Position among the subtitle streams only, used as `0:s:{index}`
     codec: str = ""
     lang: str = ""
@@ -24,7 +28,13 @@ class SubtitleStream:
 
 
 def select_subtitle_streams(streams: list[SubtitleStream], settings: EncodingSettings) -> list[SubtitleStream]:
-    """First text stream of each of `target_subtitle_languages`, in that order; languages without one are skipped."""
+    """
+    Selects the subtitles to extract.
+
+    :param streams: probed subtitle streams
+    :param settings: `target_subtitle_languages` decides the selection
+    :return: the first text stream of each language, in that order; languages without one are skipped
+    """
     candidates = [s for s in streams if s.codec in TEXT_SUBTITLE_CODECS and not s.special]
     languages = dict.fromkeys(normalize_language(lang) for lang in settings.target_subtitle_languages)
 
@@ -36,12 +46,21 @@ def select_subtitle_streams(streams: list[SubtitleStream], settings: EncodingSet
 
 
 def language_suffix(lang: str) -> str:
-    """ISO 639-1 where the language has one, otherwise the ISO 639-2 code as is."""
+    """
+    Gives the language code used in subtitle file names.
+
+    :param lang: ISO 639-2/T code
+    :return: the ISO 639-1 code where the language has one, otherwise `lang`
+    """
     return ALPHA_3_TO_ALPHA_2.get(lang, lang)
 
 
 def ensure_utf8(path: Path) -> None:
-    """ffmpeg passes the bytes of text subtitles through, so a legacy codepage ends up in the file."""
+    """
+    Converts subtitles to UTF-8 in place: ffmpeg passes text subtitles through in their legacy codepage.
+
+    :param path: the subtitle file, left as is when its encoding is unknown
+    """
     data = path.read_bytes()
     best = from_bytes(data).best()
     if best is None:

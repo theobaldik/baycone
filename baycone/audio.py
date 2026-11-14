@@ -1,3 +1,5 @@
+"""Probed audio streams and the selection of output tracks."""
+
 from dataclasses import dataclass
 
 from baycone.settings import EncodingSettings
@@ -33,18 +35,32 @@ AAC_EFFICIENCY: dict[str, float] = {"opus": 1.5, "vorbis": 1.1, "mp3": 0.75, "ac
 
 
 def normalize_language(code: str) -> str:
+    """
+    Normalizes a language code to ISO 639-2/T.
+
+    :param code: ISO 639-2/B or /T code, in any case
+    :return: lower-case /T code (`cze` becomes `ces`), `und` for an empty one
+    """
     code = code.strip().lower()
     # ISO 639-2/B and /T codes both occur in the wild, MP4 requires /T
     return BIBLIOGRAPHIC_TO_TERMINOLOGY.get(code, code) or UNDEFINED_LANGUAGE
 
 
 def cap_bitrate(source: int, target: int) -> int:
-    """Never upscales, falls back to `target` when the source bitrate is unknown."""
+    """
+    Caps a bitrate without ever raising it.
+
+    :param source: source bitrate, 0 when unknown
+    :param target: the cap
+    :return: the lower of the two, `target` when the source is unknown
+    """
     return min(source, target) if source > 0 else target
 
 
 @dataclass
 class AudioStream:
+    """A probed audio stream; `index` counts audio streams only, `channel_bitrate` is kbps, 0 when unknown."""
+
     index: int = 0
     shall_encode: bool = False
     codec: str = ""
@@ -61,6 +77,7 @@ class AudioStream:
 
     @property
     def aac_channel_bitrate(self) -> int:
+        """`channel_bitrate` converted to its AAC equivalent."""
         return int(self.channel_bitrate * AAC_EFFICIENCY.get(self.codec, 1.0))
 
     @property
@@ -68,11 +85,18 @@ class AudioStream:
         return self.aac_channel_bitrate * self.channels
 
     def generate_track_name(self) -> str:
+        """
+        Names the track by its channel layout.
+
+        :return: `Stereo`, `Surround 5.1`, ..., empty for an unusual layout
+        """
         return TRACK_NAMES.get(self.channels, "")
 
 
 @dataclass
 class AudioTrack:
+    """An output audio track: `stream` copied, or encoded to AAC at `bitrate`."""
+
     stream: AudioStream
     bitrate: int = 0  # kbps, 0 copies the stream
     default: bool = False
@@ -83,6 +107,7 @@ class AudioTrack:
 
     @property
     def disposition(self) -> str:
+        """The ffmpeg `-disposition` value."""
         flags = [name for name, enabled in (("default", self.default), ("original", self.stream.original)) if enabled]
         return "+".join(flags) or "0"
 
@@ -96,7 +121,14 @@ def _pick_by_channels(versions: list[AudioStream], preferred: int) -> AudioStrea
 
 
 def select_audio_tracks(streams: list[AudioStream], settings: EncodingSettings) -> list[AudioTrack]:
-    """The configured languages in order, one track per language; the original alone when none of them is found."""
+    """
+    Selects the output audio tracks.
+
+    :param streams: probed audio streams
+    :param settings: `target_audio_*` decide the selection
+    :return: one track per language of `target_audio_languages` found, in that order; the original alone when none
+        is found
+    """
     candidates = [s for s in streams if not s.special]
 
     if candidates:

@@ -1,4 +1,4 @@
-"""ISO 639 code tables; `tests/test_languages.py` keeps them in sync with `pycountry`."""
+"""ISO 639 code tables; `tests/core/test_languages.py` keeps them in sync with `pycountry`."""
 
 # ISO 639-2/B -> ISO 639-2/T, only the codes that differ
 BIBLIOGRAPHIC_TO_TERMINOLOGY: dict[str, str] = {

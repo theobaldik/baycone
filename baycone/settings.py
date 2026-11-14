@@ -1,3 +1,5 @@
+"""Encoding settings and the ffmpeg binaries to run."""
+
 import logging
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
@@ -21,8 +23,15 @@ def _validate(key: str, value: object, default: object) -> None:
 
 
 class Serializable:
+    """Dict round trip of a settings dataclass."""
 
     def from_dict(self, data: dict) -> None:
+        """
+        Sets the fields named in `data`; unknown keys are logged and ignored.
+
+        :param data: field name -> value
+        :raises ValueError: when `data` is not a mapping, or a value's type differs from the default's
+        """
         if not isinstance(data, dict):
             raise ValueError(f"Expected a mapping of configuration keys, got {data!r}")
 
@@ -35,17 +44,36 @@ class Serializable:
                 log.warning(f"Unknown configuration key '{key}' ignored")
 
     def to_dict(self) -> dict:
+        """
+        Converts the fields to a dict.
+
+        :return: field name -> value
+        """
         return asdict(self)
 
 
 @dataclass(frozen=True)
 class FFmpegTools:
+    """
+    The ffmpeg and ffprobe binaries to run.
+
+    :param ffmpeg: name or path of ffmpeg
+    :param ffprobe: name or path of ffprobe
+    """
+
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
 
 
 @dataclass
 class EncodingSettings(Serializable):
+    """
+    What a file is turned into.
+
+    `allowed_*` and `limit_*` decide which streams are re-encoded, `target_*` what into. Bitrates are in kbps (audio
+    per channel), languages ISO 639-2 codes, codecs and containers ffprobe names.
+    """
+
     allowed_containers: list[str] = field(default_factory=lambda: ["mp4"])
     allowed_video_codecs: list[str] = field(default_factory=lambda: ["h264"])
     allowed_audio_codecs: list[str] = field(default_factory=lambda: ["aac"])

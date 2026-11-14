@@ -1,3 +1,5 @@
+"""Analyzing a file with ffprobe and transcoding it with ffmpeg."""
+
 import errno
 import logging
 import subprocess
@@ -80,6 +82,8 @@ def _is_special(stream: dict) -> bool:
 
 @dataclass
 class VideoStream:
+    """The probed video stream; `bitrate` in kbps, 0 when unknown."""
+
     shall_encode: bool = False
     codec: str = ""
     bitrate: int = 0
@@ -92,14 +96,18 @@ class VideoStream:
 
     @property
     def h264_bitrate(self) -> int:
+        """`bitrate` converted to its h264 equivalent."""
         return int(self.bitrate * H264_EFFICIENCY.get(self.codec, 1.0))
 
     @property
     def is_hdr(self) -> bool:
+        """HDR10 or HLG."""
         return self.color_transfer in HDR_TRANSFERS
 
 
 class FileInfo:
+    """The result of `Analyzer.analyze()`: the probed streams, what has to be re-encoded and the selected tracks."""
+
     def __init__(self, file_path: Path, **kwargs) -> None:
         self.file_path: Path = file_path
 
@@ -118,7 +126,15 @@ class FileInfo:
 
 @dataclass
 class Job:
-    """Where a file goes; with `work_dir` on another filesystem than `output_file`, publishing has to copy."""
+    """
+    One file to process.
+
+    :param input_file: the source, never modified
+    :param output_file: where the result is published
+    :param work_dir: temporary files; reusing it lets an interrupted run keep its first pass. On another filesystem
+        than `output_file`, publishing copies instead of renaming
+    :param name: shown in the log, the input file name when empty
+    """
 
     PASSLOG_DIR = "passlogfiles"
     ENCODED_DIR = "encoded"
@@ -127,7 +143,6 @@ class Job:
     input_file: Path
     output_file: Path
     work_dir: Path
-    # Shown in the log instead of the file name
     name: str = field(default="")
 
     def __post_init__(self) -> None:
@@ -165,6 +180,12 @@ class Job:
         return self.optimized_dir / self.output_file.name
 
     def subtitle_path(self, lang: str) -> Path:
+        """
+        Gives the path subtitles of a language are extracted to.
+
+        :param lang: ISO 639-2 code
+        :return: `<output>.<lang>.srt`, with the ISO 639-1 code where the language has one
+        """
         return self.output_file.with_suffix(f".{language_suffix(lang)}.srt")
 
     @staticmethod
@@ -178,10 +199,17 @@ class Job:
         self._clear(self.optimized_dir)
 
     def clear_passlog(self) -> None:
+        """Drops a kept first pass."""
         self._clear(self.passlog_dir)
 
 
 class Analyzer:
+    """
+    Probes files and decides, by the settings, what has to be re-encoded.
+
+    :param settings: copied, the defaults when omitted
+    :param tools: the ffmpeg and ffprobe binaries
+    """
 
     def __init__(self, settings: EncodingSettings | None = None, tools: FFmpegTools = FFmpegTools()) -> None:
         self._settings: EncodingSettings = deepcopy(settings) if settings else EncodingSettings()
@@ -294,7 +322,12 @@ class Analyzer:
         return file_info
 
     def detect_crop(self, file_path: Path, video: VideoStream) -> None:
-        """Top and bottom bars only, the full width is always kept."""
+        """
+        Crops black bars at the top and bottom, the full width is always kept. Decodes keyframes of the whole file.
+
+        :param file_path: the file `video` belongs to
+        :param video: gets its `crop_height` and `crop_top` set
+        """
         log.info("Detecting black bars...")
         try:
             result = subprocess.run(
@@ -321,7 +354,12 @@ class Analyzer:
             log.info("No black bars detected")
 
     def analyze(self, file_path: Path) -> FileInfo:
-        """`is_valid` is False for a file that cannot be processed, nothing is raised."""
+        """
+        Probes a file and decides what has to be re-encoded. Nothing is raised.
+
+        :param file_path: the file to probe
+        :return: the analysis, `is_valid` False for a file that cannot be processed
+        """
         file_info = self._get_file_info(file_path)
         settings = self._settings
 
@@ -353,6 +391,13 @@ class Analyzer:
 
 
 class Encoder:
+    """
+    Transcodes files into streaming-friendly MP4, re-encoding only the streams that need it.
+
+    :param settings: copied, the defaults when omitted
+    :param tools: the ffmpeg and ffprobe binaries
+    :param on_progress: called with the step and its percent while ffmpeg runs
+    """
 
     def __init__(
         self,
@@ -374,10 +419,14 @@ class Encoder:
         self._stalled: bool = False
 
     def process(self, job: Job, remux_only: bool = False) -> Path:
-        """Returns `job.output_file`. The input file is never modified; on failure no output is left behind.
+        """
+        Processes one file. The input file is never modified; on failure no output is left behind.
 
-        Raises `InsufficientSpaceError` (before writing anything) when the file has to wait for free space,
-        another `BayconeError` when it cannot be processed.
+        :param job: the file to process
+        :param remux_only: copy every stream, re-encode nothing
+        :return: `job.output_file`, with subtitles extracted next to it
+        :raises InsufficientSpaceError: before anything is written, when the file has to wait for free space
+        :raises BayconeError: when the file cannot be processed
         """
         file_path = job.input_file
         self._job = job

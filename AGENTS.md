@@ -189,6 +189,11 @@ CLI's `main()` — importing a module must not configure logging. The core logs 
   Third-party names keep their own spelling (x264's `analyse=`)
 - Docstrings and comments only where the code can't speak for itself (a non-obvious why, invariant or gotcha) —
   one short line, no restating names or signatures, no section banners, no commented-out code. `TODO`s are fine
+- The `baycone` library is the exception: every module, and every class or public method a caller uses, gets a
+  brief docstring saying what it is or does, with units and gotchas — still no restating of names or signatures
+- Docstrings follow PEP 257: `"""One line."""`, or the quotes on their own lines around a multiline one. A
+  docstring of a callable taking arguments or returning a value lists them as reST fields — `:param name:`,
+  `:return:`, `:raises Error:` — a class documents its constructor's parameters
 
 ## Branching and releases
 
