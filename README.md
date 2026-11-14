@@ -1,6 +1,7 @@
 # Baycone
 
 [![Tests](https://github.com/theobaldik/baycone/actions/workflows/tests.yml/badge.svg)](https://github.com/theobaldik/baycone/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/baycone?logo=pypi&logoColor=white)](https://pypi.org/project/baycone/)
 [![Release](https://img.shields.io/github/v/release/theobaldik/baycone)](https://github.com/theobaldik/baycone/releases)
 [![Docker Pulls](https://img.shields.io/docker/pulls/theobaldik/baycone?logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone)
 [![Image Size](https://img.shields.io/docker/image-size/theobaldik/baycone/latest?logo=docker&logoColor=white)](https://hub.docker.com/r/theobaldik/baycone)
@@ -383,8 +384,8 @@ Baycone is released under the [MIT License](LICENSE).
 
 ### Third-party components
 
-Baycone's Python dependencies are colorlog (MIT) and PyYAML (MIT). They are installed from PyPI and no third-party code
-is vendored into this repository.
+Baycone's Python dependencies are charset-normalizer (MIT), colorlog (MIT) and PyYAML (MIT). They are installed from
+PyPI and no third-party code is vendored into this repository.
 
 The published Docker image additionally bundles system packages that keep their own licenses — most notably `ffmpeg`,
 which Debian builds with `--enable-gpl` (libx264 / libx265) and distributes under the GPL. Baycone runs `ffmpeg` and

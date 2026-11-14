@@ -13,8 +13,9 @@ Python dependencies
 
 Installed from PyPI and not redistributed as source in this project:
 
-  colorlog  — MIT License
-  PyYAML    — MIT License
+  charset-normalizer — MIT License
+  colorlog           — MIT License
+  PyYAML             — MIT License
 
 Components bundled in the Docker image
 --------------------------------------

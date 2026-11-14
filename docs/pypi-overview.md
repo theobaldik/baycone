@@ -1,5 +1,10 @@
 # Baycone
 
+[![Tests](https://github.com/theobaldik/baycone/actions/workflows/tests.yml/badge.svg)](https://github.com/theobaldik/baycone/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/baycone?logo=pypi&logoColor=white)](https://pypi.org/project/baycone/)
+[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/theobaldik/baycone)](https://github.com/theobaldik/baycone/blob/master/LICENSE)
+
 **Transcode videos into streaming-friendly MP4 with ffmpeg — as a Python library or a command.**
 
 Baycone turns a video file into an MP4 that plays everywhere and starts instantly: h264 or hevc video, AAC audio and
