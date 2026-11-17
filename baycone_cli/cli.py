@@ -1,11 +1,16 @@
 import argparse
 import json
 import logging
+import os
 import shutil
+import signal
 import sys
 from contextlib import suppress
 from dataclasses import asdict, is_dataclass
+from functools import partial
 from pathlib import Path
+from types import FrameType
+from typing import NoReturn
 
 from baycone import ffmpeg
 from baycone.encoding import Analyzer, Encoder, Job
@@ -17,6 +22,8 @@ log = logging.getLogger(__name__)
 # A directory of the CLI's own: `.baycone` itself may hold a running service's state and work files
 DIR_WORK = Path(".baycone") / "cli"
 DIR_OUTPUT = Path("_baycone_processed")
+# 128 + SIGINT, what shells report for a command stopped by Ctrl+C
+EXIT_INTERRUPTED = 130
 
 
 class Console:
@@ -140,6 +147,20 @@ def _remove_work_dir(work_dir: Path) -> None:
         work_dir.parent.rmdir()
 
 
+def _interrupt(console: Console, signum: int, frame: FrameType | None) -> None:
+    # FFmpeg got the same SIGINT from the terminal; unwinding kills it and removes the work files
+    console.end_line()
+    print("Interrupted, cleaning up (press Ctrl+C again to force stop)", file=sys.stderr)
+    signal.signal(signal.SIGINT, _force_stop)
+    raise KeyboardInterrupt
+
+
+def _force_stop(signum: int, frame: FrameType | None) -> NoReturn:
+    # Skips the cleanup: the work dir is left behind, the output path never holds a partial file
+    print("Forced stop", file=sys.stderr)
+    os._exit(EXIT_INTERRUPTED)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     input_file = args.input.absolute()
@@ -150,6 +171,16 @@ def main(argv: list[str] | None = None) -> int:
     console = Console()
     logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[ConsoleHandler(console)], force=True)
 
+    previous_handler = signal.signal(signal.SIGINT, partial(_interrupt, console))
+    try:
+        return _run(args, input_file, console)
+    except KeyboardInterrupt:
+        return EXIT_INTERRUPTED
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
+def _run(args: argparse.Namespace, input_file: Path, console: Console) -> int:
     settings = build_settings(args)
     tools = FFmpegTools(ffmpeg=args.ffmpeg, ffprobe=args.ffprobe)
 

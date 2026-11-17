@@ -1,4 +1,5 @@
 import json
+import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -130,6 +131,33 @@ class TestErrors:
     def test_unexpected_error_exits_with_2(self, media_file):
         code, _ = run_cli(str(media_file), process=MagicMock(side_effect=OSError("disk full")))
         assert code == 2
+
+
+class TestInterrupt:
+    def test_exits_with_130_and_removes_the_work_dir(self, media_file):
+        def process(job, remux_only):
+            job.work_dir.mkdir(parents=True)
+            raise KeyboardInterrupt
+
+        code, _ = run_cli(str(media_file), process=MagicMock(side_effect=process))
+        assert code == 130
+        assert not (media_file.parent / ".baycone").exists()
+
+    def test_restores_the_previous_handler(self, media_file):
+        before = signal.getsignal(signal.SIGINT)
+        run_cli(str(media_file))
+        assert signal.getsignal(signal.SIGINT) is before
+
+    def test_first_ctrl_c_unwinds_and_arms_the_force_stop(self, capsys):
+        with patch("baycone_cli.cli.signal.signal") as set_handler, pytest.raises(KeyboardInterrupt):
+            cli._interrupt(cli.Console(), signal.SIGINT, None)
+        set_handler.assert_called_once_with(signal.SIGINT, cli._force_stop)
+        assert "Ctrl+C again" in capsys.readouterr().err
+
+    def test_second_ctrl_c_exits_without_cleanup(self):
+        with patch("baycone_cli.cli.os._exit") as exit_now:
+            cli._force_stop(signal.SIGINT, None)
+        exit_now.assert_called_once_with(130)
 
 
 class TestInfo:

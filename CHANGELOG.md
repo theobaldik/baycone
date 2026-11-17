@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Stop `baycone-cli` cleanly on Ctrl+C instead of printing a traceback; a second Ctrl+C stops it at once
+
 ## [0.7.0] - 2026-11-13
 
 ### Changed
