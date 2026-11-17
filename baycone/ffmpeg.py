@@ -11,6 +11,8 @@ from baycone.settings import FFmpegTools
 AUDIO_ARGS = "{audio_args}"
 VIDEO_ARGS = "{video_args}"
 VIDEO_CODEC_ARGS = "{video_codec_args}"
+# Before `-i`: input options, so `-to` stays on the source's timeline and the output starts at 0
+CUT_ARGS = "{cut_args}"
 
 # TODO: Find out which parameters are really necessary and optimize them for both passes
 X264_PARAMS_MOVIE_PASS_1 = [
@@ -189,6 +191,7 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_1 = [
     "-hide_banner",
     "-v",
     "error",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -215,6 +218,7 @@ CMD_FFMPEG_ENCODE_MOVIE_PASS_2 = [
     "-hide_banner",
     "-v",
     "error",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -245,6 +249,7 @@ CMD_FFMPEG_ENCODE_AUDIO = [
     "-hide_banner",
     "-v",
     "error",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -265,6 +270,7 @@ CMD_FFMPEG_OPTIMIZE = [
     "error",
     "-fflags",
     "+genpts",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -282,6 +288,10 @@ CMD_FFMPEG_OPTIMIZE = [
 ]
 
 ARGS_VIDEO_FILTERS = ["-vf", "{filters}"]
+
+# Fixed-point, the exponent form of a tiny float is not a valid ffmpeg duration
+ARGS_CUT_START = ["-ss", "{start:.3f}"]
+ARGS_CUT_END = ["-to", "{end:.3f}"]
 
 FILTER_CROP = "crop=iw:{height}:0:{top}"
 FILTER_SCALE = "scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2"
@@ -315,6 +325,7 @@ CMD_FFMPEG_CROPDETECT = [
     "-nostats",
     "-skip_frame",
     "nokey",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -334,6 +345,7 @@ CMD_FFMPEG_EXTRACT_SUBTITLE = [
     "-hide_banner",
     "-v",
     "error",
+    CUT_ARGS,
     "-i",
     "{input_file}",
     "-map",
@@ -401,6 +413,15 @@ def get_filter_tonemap(transfer: str) -> str:
     return FILTER_TONEMAP.format(transfer=transfer)
 
 
+def _cut_args(start: float | None, end: float | None) -> list[str]:
+    args = []
+    if start is not None:
+        args += _render(ARGS_CUT_START, start=start)
+    if end is not None:
+        args += _render(ARGS_CUT_END, end=end)
+    return args
+
+
 def _video_args(video_filters: list[str]) -> list[str]:
     return _render(ARGS_VIDEO_FILTERS, filters=",".join(video_filters)) if video_filters else []
 
@@ -438,12 +459,16 @@ def get_cmd_encode_movie_pass_1(
     video_bitrate: int,
     video_filters: list[str],
     tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[str]:
     video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_1,
         tools=tools,
         splices={
+            CUT_ARGS: _cut_args(start, end),
             VIDEO_ARGS: _video_args(video_filters),
             VIDEO_CODEC_ARGS: _render(video_codec.pass_1, passlog_file=passlog_file.absolute()),
         },
@@ -463,12 +488,16 @@ def get_cmd_encode_movie_pass_2(
     video_filters: list[str],
     audio_tracks: list[AudioTrack],
     tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[str]:
     video_codec = VIDEO_CODECS[codec]
     return _render(
         CMD_FFMPEG_ENCODE_MOVIE_PASS_2,
         tools=tools,
         splices={
+            CUT_ARGS: _cut_args(start, end),
             VIDEO_ARGS: _video_args(video_filters),
             VIDEO_CODEC_ARGS: _render(video_codec.pass_2, passlog_file=passlog_file.absolute()),
             AUDIO_ARGS: _audio_encode_args(audio_tracks),
@@ -482,12 +511,18 @@ def get_cmd_encode_movie_pass_2(
 
 
 def get_cmd_encode_audio(
-    input_file: Path, output_file: Path, audio_tracks: list[AudioTrack], tools: FFmpegTools = DEFAULT_TOOLS
+    input_file: Path,
+    output_file: Path,
+    audio_tracks: list[AudioTrack],
+    tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[str]:
     return _render(
         CMD_FFMPEG_ENCODE_AUDIO,
         tools=tools,
-        splices={AUDIO_ARGS: _audio_encode_args(audio_tracks)},
+        splices={CUT_ARGS: _cut_args(start, end), AUDIO_ARGS: _audio_encode_args(audio_tracks)},
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
     )
@@ -499,26 +534,48 @@ def get_cmd_optimize(
     audio_tracks: list[AudioTrack],
     encoded: bool,
     tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[str]:
     return _render(
         CMD_FFMPEG_OPTIMIZE,
         tools=tools,
-        splices={AUDIO_ARGS: _audio_metadata_args(audio_tracks, encoded)},
+        splices={CUT_ARGS: _cut_args(start, end), AUDIO_ARGS: _audio_metadata_args(audio_tracks, encoded)},
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
     )
 
 
-def get_cmd_cropdetect(input_file: Path, tools: FFmpegTools = DEFAULT_TOOLS) -> list[str]:
-    return _render(CMD_FFMPEG_CROPDETECT, tools=tools, input_file=input_file.absolute())
+def get_cmd_cropdetect(
+    input_file: Path,
+    tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
+) -> list[str]:
+    return _render(
+        CMD_FFMPEG_CROPDETECT,
+        tools=tools,
+        splices={CUT_ARGS: _cut_args(start, end)},
+        input_file=input_file.absolute(),
+    )
 
 
 def get_cmd_extract_subtitle(
-    input_file: Path, output_file: Path, source: int, copy: bool, tools: FFmpegTools = DEFAULT_TOOLS
+    input_file: Path,
+    output_file: Path,
+    source: int,
+    copy: bool,
+    tools: FFmpegTools = DEFAULT_TOOLS,
+    *,
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[str]:
     return _render(
         CMD_FFMPEG_EXTRACT_SUBTITLE,
         tools=tools,
+        splices={CUT_ARGS: _cut_args(start, end)},
         input_file=input_file.absolute(),
         output_file=output_file.absolute(),
         source=source,

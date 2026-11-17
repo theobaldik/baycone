@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Exit `baycone-cli` with `1` when the file could not be processed and with `2` on any invalid
+  argument, the other way round than before
+- Report `FileInfo.duration` in seconds with their fraction instead of whole seconds
+
+### Added
+
+- Add `Job.start` and `Job.end` to cut a video while it is processed, frame-accurately when the video is encoded
+- Add the `force_video_encode` setting to encode the video even when it is within every limit
+- Add `--start`, `--end` and `--force-video-encode` to `baycone-cli`
+
 ### Fixed
 
 - Stop `baycone-cli` cleanly on Ctrl+C instead of printing a traceback; a second Ctrl+C stops it at once

@@ -45,6 +45,7 @@ baycone-cli movie.mkv --output /media/out.mp4
 baycone-cli movie.mkv -l cze -l eng -v 1800    # audio languages in order, video bitrate in kbps
 baycone-cli movie.mkv --codec hevc
 baycone-cli movie.mkv --remux-only             # never encode, only remux into MP4
+baycone-cli trailer.mp4 --start 0:07 --end 2:21.5 --force-video-encode  # frame-accurate cut
 baycone-cli movie.mkv --info                   # print the analysis as JSON and exit
 ```
 
@@ -57,11 +58,16 @@ baycone-cli movie.mkv --info                   # print the analysis as JSON and 
 | `-a`, `--audio-bitrate` | `64`                   | Target audio bitrate per channel in kbps                |
 | `--codec`               | `h264`                 | Target video codec, `h264` or `hevc`                    |
 | `--subtitles`           | none                   | Subtitle language to extract to `.srt`, repeatable      |
+| `--start`, `--end`      | none                   | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
+| `--force-video-encode`  | off                    | Encode the video even within every limit                |
 | `--remux-only`          | off                    | Copy every stream, only remux into the target container |
 | `--info`                | off                    | Print the analysis as JSON and exit                     |
 | `--ffmpeg`, `--ffprobe` | `ffmpeg`, `ffprobe`    | Binaries to use                                         |
 
-Exit codes: `0` success, `1` invalid arguments, `2` the file could not be processed.
+A cut is exact only when the video is encoded: a copied video starts at the keyframe before `--start`, so add
+`--force-video-encode` for a source that is already within limits.
+
+Exit codes: `0` success, `1` the file could not be processed, `2` invalid arguments, `130` stopped by Ctrl+C.
 
 ## Library
 
@@ -84,6 +90,9 @@ except BayconeError as e:
   written, `InvalidFileError` for an unreadable or truncated file, `EncodingError` when ffmpeg fails, and
   `SourceChangedError` when the input changed while it was processed.
 - Keep `work_dir` on the same filesystem as `output_file`, otherwise publishing has to copy the file.
+- `Job(..., start=7.0, end=141.5)` cuts the video to that range of the source, in seconds; an out-of-range cut
+  raises `InvalidCutError` before anything is written. The cut is frame-accurate when the video is encoded; a
+  copied video starts at the keyframe before `start`, so set `force_video_encode=True` for a source within limits.
 - `Analyzer(settings).analyze(path)` returns the analysis alone, without encoding anything.
 - The library logs through `logging` under `baycone.*` and configures no handlers. It is fully typed.
 

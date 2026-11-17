@@ -26,7 +26,7 @@
 
 ## Test status
 
-`uv run pytest` is green on Linux (474 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
+`uv run pytest` is green on Linux (523 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
 On Windows three tests fail for platform reasons (CRLF, path separators, `os.fsync` mocking). No real
 `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run` and `subprocess.Popen` are mocked.
 
@@ -134,7 +134,10 @@ failure the original stays put, `_process_file()` returns `False` and the watche
 failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it is within
 limits, and a container mismatch alone is fixed by the optimize remux; `remux_only=True` copies every stream. Black-bar
 detection (`Analyzer.detect_crop`) decodes keyframes of the whole file, so it only runs when the video is re-encoded
-anyway. `_cleanup_workdirs()` always runs (`finally`) and must not raise.
+anyway. `_cleanup_workdirs()` always runs (`finally`) and must not raise. A cut (`Job.start` / `Job.end`) is an
+input option (`-ss`/`-to` before `-i`) of every command reading the source: crop detection, both passes, the audio
+encode, subtitles, and optimize only when it reads the source — never the already cut encoded file. Progress and
+the free-space estimate use the cut length; the truncation check (`_is_complete`) still covers the whole source.
 
 **Crash safety.** `_optimize()` writes into `<work dir>/optimized/`; `_publish()` fsyncs that file, renames it to
 `job.output_file` and fsyncs the directory — the output path never holds a half-written file, and the service archives

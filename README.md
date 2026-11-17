@@ -105,6 +105,7 @@ defaults:
   limit_video_bitrate: 2800         # kbps, h264 equivalent — files below this are not re-encoded
   limit_video_height: 1080          # larger videos are scaled down to fit 1920x1080
   limit_audio_channel_bitrate: 96   # kbps per channel, aac equivalent
+  force_video_encode: false         # encode the video even when it is within every limit
 
   # Used when a file does have to be re-encoded.
   target_extension: .mp4
@@ -281,6 +282,7 @@ baycone-cli movie.mkv                          # result in _baycone_processed/mo
 baycone-cli movie.mkv --output /media/out.mp4
 baycone-cli movie.mkv -l cze -l eng -v 1800    # audio languages in order, video bitrate
 baycone-cli movie.mkv --remux-only             # never encode, only remux into MP4
+baycone-cli trailer.mp4 --start 0:07 --end 2:21.5 --force-video-encode  # frame-accurate cut
 baycone-cli movie.mkv --info                   # print the analysis as JSON and exit
 ```
 
@@ -293,11 +295,16 @@ baycone-cli movie.mkv --info                   # print the analysis as JSON and 
 | `-a`, `--audio-bitrate` | `64`                      | Target audio bitrate per channel in kbps                |
 | `--codec`               | `h264`                    | Target video codec, `h264` or `hevc`                    |
 | `--subtitles`           | none                      | Subtitle language to extract to `.srt`, repeatable      |
+| `--start`, `--end`      | none                      | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
+| `--force-video-encode`  | off                       | Encode the video even within every limit                |
 | `--remux-only`          | off                       | Copy every stream, only remux into the target container |
 | `--info`                | off                       | Print the analysis as JSON and exit                     |
 | `--ffmpeg`, `--ffprobe` | `ffmpeg`, `ffprobe`       | Binaries to use                                         |
 
-Exit codes: `0` success, `1` invalid arguments, `2` the file could not be processed.
+A cut is exact only when the video is encoded: a copied video starts at the keyframe before `--start`, so add
+`--force-video-encode` for a source that is already within limits.
+
+Exit codes: `0` success, `1` the file could not be processed, `2` invalid arguments, `130` stopped by Ctrl+C.
 
 ## Using as a library
 
@@ -325,6 +332,9 @@ except BayconeError as e:
 `InsufficientSpaceError` before writing anything when the work directory lacks space, `InvalidFileError` for an
 unreadable or truncated file, `EncodingError` when FFmpeg fails and `SourceChangedError` when the input changed while
 it was processed. Keep `work_dir` on the same filesystem as `output_file`, otherwise publishing copies the file.
+`Job(..., start=7.0, end=141.5)` cuts the video to that range of the source, in seconds, and an out-of-range cut
+raises `InvalidCutError` before anything is written. The cut is frame-accurate when the video is encoded; a copied
+video starts at the keyframe before `start`, so set `force_video_encode=True` for a source within limits.
 `Analyzer(settings).analyze(path)` returns the analysis alone. The library logs through `logging` under `baycone.*`
 and configures no handlers.
 

@@ -24,7 +24,13 @@ from baycone.audio import (
     normalize_language,
     select_audio_tracks,
 )
-from baycone.errors import EncodingError, InsufficientSpaceError, InvalidFileError, SourceChangedError
+from baycone.errors import (
+    EncodingError,
+    InsufficientSpaceError,
+    InvalidCutError,
+    InvalidFileError,
+    SourceChangedError,
+)
 from baycone.files import Signature, file_signature, fsync, fsync_dir, write_atomic
 from baycone.settings import EncodingSettings, FFmpegTools
 from baycone.subtitles import SRT_CODECS, SubtitleStream, ensure_utf8, language_suffix, select_subtitle_streams
@@ -52,6 +58,14 @@ type ProgressCallback = Callable[[str, float], None]
 
 def _format_duration(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
+
+
+def _format_time(seconds: float) -> str:
+    """A position, to the millisecond: `1:02:03.500`."""
+    sign, seconds = ("-" if seconds < 0 else ""), abs(seconds)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(int(minutes), 60)
+    return f"{sign}{hours}:{minutes:02}:{seconds:06.3f}"
 
 
 def _format_size(size: float) -> str:
@@ -114,7 +128,7 @@ class FileInfo:
         self.is_valid: bool = kwargs.get("is_valid", False)
         self.shall_remux: bool = kwargs.get("shall_remux", False)
 
-        self.duration: int = kwargs.get("duration", 0)
+        self.duration: float = kwargs.get("duration", 0.0)  # seconds, 0 when unknown
         self.containers: list[str] = kwargs.get("containers", [])
 
         self.video_stream: VideoStream = kwargs.get("video_stream", VideoStream())
@@ -134,6 +148,9 @@ class Job:
     :param work_dir: temporary files; reusing it lets an interrupted run keep its first pass. On another filesystem
         than `output_file`, publishing copies instead of renaming
     :param name: shown in the log, the input file name when empty
+    :param start: seconds on the source's timeline to cut from, None to keep its beginning. Exact when the video is
+        encoded; a copied video starts at the keyframe before it (see `EncodingSettings.force_video_encode`)
+    :param end: seconds on the source's timeline to cut at, None to keep its end
     """
 
     PASSLOG_DIR = "passlogfiles"
@@ -144,6 +161,8 @@ class Job:
     output_file: Path
     work_dir: Path
     name: str = field(default="")
+    start: float | None = None
+    end: float | None = None
 
     def __post_init__(self) -> None:
         self.name = self.name or self.input_file.name
@@ -276,7 +295,7 @@ class Analyzer:
 
         file_info = FileInfo(file_path=file_path, is_valid=True)
         file_info.containers = format_info.get("format_name", "").split(",")
-        file_info.duration = int(duration)
+        file_info.duration = duration
 
         streams = probe_result.get("streams", [])
 
@@ -321,17 +340,21 @@ class Analyzer:
 
         return file_info
 
-    def detect_crop(self, file_path: Path, video: VideoStream) -> None:
+    def detect_crop(
+        self, file_path: Path, video: VideoStream, start: float | None = None, end: float | None = None
+    ) -> None:
         """
         Crops black bars at the top and bottom, the full width is always kept. Decodes keyframes of the whole file.
 
         :param file_path: the file `video` belongs to
         :param video: gets its `crop_height` and `crop_top` set
+        :param start: seconds to look from, as `Job.start`
+        :param end: seconds to look until, as `Job.end`
         """
         log.info("Detecting black bars...")
         try:
             result = subprocess.run(
-                ffmpeg.get_cmd_cropdetect(file_path, tools=self._tools),
+                ffmpeg.get_cmd_cropdetect(file_path, tools=self._tools, start=start, end=end),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -375,6 +398,7 @@ class Analyzer:
             or video.is_hdr
             or video.width > settings.limit_video_width
             or video.height > settings.limit_video_height
+            or settings.force_video_encode
         ):
             video.shall_encode = True
 
@@ -440,6 +464,7 @@ class Encoder:
             codec = self._settings.target_video_codec
             if codec not in ffmpeg.VIDEO_CODECS:
                 raise EncodingError(f"Unsupported target_video_codec '{codec}', use one of {list(ffmpeg.VIDEO_CODECS)}")
+            self._validate_cut()
 
             if remux_only:
                 self._copy_all_streams()
@@ -450,10 +475,13 @@ class Encoder:
             )
             self._check_free_space(shall_encode)
 
-            log.info(f"Processing '{job.name}' ({_format_duration(self._processing_file.duration)})")
+            cut = ""
+            if self._is_cut():
+                cut = ", cut {} - {}".format(*map(_format_time, self._cut_bounds()))
+            log.info(f"Processing '{job.name}' ({_format_duration(self._duration())}{cut})")
             # Decodes keyframes of the whole file, only worth it when the video is encoded anyway
             if self._processing_file.video_stream.shall_encode:
-                self._analyzer.detect_crop(file_path, self._processing_file.video_stream)
+                self._analyzer.detect_crop(file_path, self._processing_file.video_stream, job.start, job.end)
             self._log_plan()
 
             if not shall_encode and self._processing_file.shall_remux:
@@ -477,6 +505,38 @@ class Encoder:
             self._processing_file = None
             self._job = None
 
+    def _is_cut(self) -> bool:
+        return self._job.start is not None or self._job.end is not None
+
+    def _cut_bounds(self) -> tuple[float, float]:
+        """`Job.start` / `Job.end` with the file's own beginning and end in place of None."""
+        job, duration = self._job, self._processing_file.duration
+        return (job.start or 0.0), (duration if job.end is None else job.end)
+
+    def _duration(self) -> float:
+        """Of the output, in seconds: the cut, or the whole source; 0 when unknown."""
+        start, end = self._cut_bounds()
+        return end - start
+
+    def _validate_cut(self) -> None:
+        if not self._is_cut():
+            return
+        name, duration = self._job.input_file, self._processing_file.duration
+        if not duration:
+            raise InvalidCutError(f"Cannot cut '{name}', its duration is unknown")
+
+        start, end = self._cut_bounds()
+        if start < 0:
+            raise InvalidCutError(f"Cut start {_format_time(start)} of '{name}' is negative")
+        if start >= end:
+            raise InvalidCutError(
+                f"Cut start {_format_time(start)} of '{name}' is not before its end {_format_time(end)}"
+            )
+        if end > duration:
+            raise InvalidCutError(
+                f"Cut end {_format_time(end)} of '{name}' is past the end of the file, {_format_time(duration)}"
+            )
+
     def _copy_all_streams(self) -> None:
         file_info = self._processing_file
         file_info.video_stream.shall_encode = False
@@ -492,7 +552,7 @@ class Encoder:
         # Two-pass encoding hits its bitrate, anything copied is as large as it is in the source
         if file_info.video_stream.shall_encode and file_info.duration:
             audio = sum(t.bitrate or t.stream.overall_bitrate for t in file_info.audio_tracks)
-            size = (self._target_video_bitrate() + audio) * 125 * file_info.duration
+            size = int((self._target_video_bitrate() + audio) * 125 * self._duration())
 
         return size * 2 if shall_encode else size
 
@@ -548,6 +608,8 @@ class Encoder:
         video = file_info.video_stream
         source = f"{video.codec} {video.width}x{video.height}{' HDR' if video.is_hdr else ''}"
         action = "copy"
+        if not video.shall_encode and self._job.start:
+            action += f" from the keyframe before {_format_time(self._job.start)} (force_video_encode cuts exactly)"
         if video.shall_encode:
             codec = self._settings.target_video_codec
             action = f"encode to {codec} {_format_bitrate(self._target_video_bitrate())}"
@@ -572,7 +634,7 @@ class Encoder:
     def _log_progress(self, process: subprocess.Popen, step: str) -> None:
         """Each update goes to `on_progress`, every ten percent to the log at DEBUG level."""
         name = self._job.name
-        duration = self._processing_file.duration
+        duration = self._duration()
         started = time.monotonic()
         percent = 0
 
@@ -653,7 +715,14 @@ class Encoder:
         try:
             if file_info.video_stream.shall_encode:
                 pass_1 = ffmpeg.get_cmd_encode_movie_pass_1(
-                    file_info.file_path, job.passlog_path, codec, video_bitrate, video_filters, tools=self._tools
+                    file_info.file_path,
+                    job.passlog_path,
+                    codec,
+                    video_bitrate,
+                    video_filters,
+                    tools=self._tools,
+                    start=job.start,
+                    end=job.end,
                 )
                 pass_2 = ffmpeg.get_cmd_encode_movie_pass_2(
                     file_info.file_path,
@@ -664,6 +733,8 @@ class Encoder:
                     video_filters,
                     file_info.audio_tracks,
                     tools=self._tools,
+                    start=job.start,
+                    end=job.end,
                 )
 
                 resumed = self._is_first_pass_done(pass_1)
@@ -687,7 +758,12 @@ class Encoder:
                 job.clear_passlog()
             else:
                 cmd = ffmpeg.get_cmd_encode_audio(
-                    file_info.file_path, job.encoding_path, file_info.audio_tracks, tools=self._tools
+                    file_info.file_path,
+                    job.encoding_path,
+                    file_info.audio_tracks,
+                    tools=self._tools,
+                    start=job.start,
+                    end=job.end,
                 )
                 self._run_ffmpeg(cmd, "Encoding audio", job.encoding_path)
 
@@ -724,12 +800,15 @@ class Encoder:
         """Into a work directory: the output path only ever gets the finished file, see `_publish`."""
         file_info, job = self._processing_file, self._job
         job.optimized_path.parent.mkdir(parents=True, exist_ok=True)
+        # The encoded file is cut already, only the source still needs it
         cmd = ffmpeg.get_cmd_optimize(
             job.encoding_path if encoded else file_info.file_path,
             job.optimized_path,
             file_info.audio_tracks,
             encoded,
             tools=self._tools,
+            start=None if encoded else job.start,
+            end=None if encoded else job.end,
         )
 
         try:
@@ -752,7 +831,13 @@ class Encoder:
             path = self._job.subtitle_path(stream.lang)
             try:
                 cmd = ffmpeg.get_cmd_extract_subtitle(
-                    file_info.file_path, path, stream.index, stream.codec in SRT_CODECS, tools=self._tools
+                    file_info.file_path,
+                    path,
+                    stream.index,
+                    stream.codec in SRT_CODECS,
+                    tools=self._tools,
+                    start=self._job.start,
+                    end=self._job.end,
                 )
                 self._run_ffmpeg(cmd, "Subtitles", path)
                 ensure_utf8(path)

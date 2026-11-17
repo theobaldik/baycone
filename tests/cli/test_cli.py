@@ -1,3 +1,4 @@
+import argparse
 import json
 import signal
 from pathlib import Path
@@ -37,13 +38,14 @@ def job_of(encoder: MagicMock) -> Job:
 class TestArguments:
     def test_missing_input_is_rejected(self, tmp_path):
         code, encoder = run_cli(str(tmp_path / "missing.mkv"))
-        assert code == 1
+        assert code == 2
         encoder.assert_not_called()
 
     @pytest.mark.parametrize("args", [["-v", "0"], ["-a", "-1"], ["-l", "english"], ["--codec", "vp9"]])
     def test_invalid_values_are_rejected(self, media_file, args):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exit_:
             run_cli(str(media_file), *args)
+        assert exit_.value.code == 2
 
     def test_settings_follow_the_flags(self, media_file):
         _, encoder = run_cli(
@@ -65,6 +67,24 @@ class TestArguments:
         assert (tools.ffmpeg, tools.ffprobe) == ("/opt/ffmpeg", "/opt/ffprobe")
 
 
+class TestTimestamp:
+    @pytest.mark.parametrize(
+        "value, seconds", [("83", 83.0), ("1:23", 83.0), ("1:23:03.5", 4983.5), ("0.25", 0.25), ("00:00:07", 7.0)]
+    )
+    def test_parses_positions(self, value, seconds):
+        assert cli._timestamp(value) == seconds
+
+    @pytest.mark.parametrize("value", ["-5", "1:75", "1:60:00", "abc", "1:2:3:4", "", "5s"])
+    def test_rejects_anything_else(self, value):
+        with pytest.raises(argparse.ArgumentTypeError):
+            cli._timestamp(value)
+
+    def test_help_still_exits_with_0(self):
+        with pytest.raises(SystemExit) as exit_:
+            cli.parse_args(["--help"])
+        assert exit_.value.code == 0
+
+
 class TestJob:
     def test_output_defaults_next_to_the_input(self, media_file):
         _, encoder = run_cli(str(media_file))
@@ -73,6 +93,30 @@ class TestJob:
     def test_output_is_taken_as_given(self, media_file, tmp_path):
         _, encoder = run_cli(str(media_file), "--output", str(tmp_path / "out" / "film.mp4"))
         assert job_of(encoder).output_file == tmp_path / "out" / "film.mp4"
+
+    def test_cut_is_passed_on(self, media_file):
+        job = job_of(run_cli(str(media_file), "--start", "0:05", "--end", "1:02:03.5")[1])
+        assert (job.start, job.end) == (5.0, 3723.5)
+
+    def test_no_cut_by_default(self, media_file):
+        job = job_of(run_cli(str(media_file))[1])
+        assert (job.start, job.end) == (None, None)
+
+    def test_start_after_end_is_rejected_before_anything_runs(self, media_file, capsys):
+        with patch("baycone_cli.cli.Analyzer") as analyzer, pytest.raises(SystemExit) as exit_:
+            run_cli(str(media_file), "--start", "20", "--end", "10")
+        assert exit_.value.code == 2
+        analyzer.assert_not_called()
+        assert "--start must be before --end" in capsys.readouterr().err
+
+    def test_force_video_encode_is_passed_on(self, media_file):
+        _, encoder = run_cli(str(media_file), "--force-video-encode")
+        assert encoder.call_args.args[0].force_video_encode is True
+
+    def test_force_video_encode_and_remux_only_exclude_each_other(self, media_file):
+        with pytest.raises(SystemExit) as exit_:
+            run_cli(str(media_file), "--force-video-encode", "--remux-only")
+        assert exit_.value.code == 2
 
     def test_remux_only_is_passed_on(self, media_file):
         _, encoder = run_cli(str(media_file), "--remux-only")
@@ -98,7 +142,7 @@ class TestWorkDir:
             raise EncodingError("Encoding failed")
 
         code, _ = run_cli(str(media_file), process=MagicMock(side_effect=process))
-        assert code == 2
+        assert code == 1
         assert not (media_file.parent / ".baycone").exists()
 
     @pytest.mark.parametrize("fails", [False, True], ids=["success", "failure"])
@@ -123,14 +167,14 @@ class TestWorkDir:
 
 
 class TestErrors:
-    def test_processing_error_exits_with_2(self, media_file, capsys):
+    def test_processing_error_exits_with_1(self, media_file, capsys):
         code, _ = run_cli(str(media_file), process=MagicMock(side_effect=EncodingError("Encoding failed")))
-        assert code == 2
+        assert code == 1
         assert "Error: Encoding failed" in capsys.readouterr().err
 
-    def test_unexpected_error_exits_with_2(self, media_file):
+    def test_unexpected_error_exits_with_1(self, media_file):
         code, _ = run_cli(str(media_file), process=MagicMock(side_effect=OSError("disk full")))
-        assert code == 2
+        assert code == 1
 
 
 class TestInterrupt:
@@ -172,11 +216,11 @@ class TestInfo:
         assert printed["audio_streams"][0]["lang"] == "ces"
         encoder.assert_not_called()
 
-    def test_invalid_file_exits_with_2(self, media_file):
+    def test_invalid_file_exits_with_1(self, media_file):
         with patch("baycone_cli.cli.Analyzer") as analyzer:
             analyzer.return_value.analyze.return_value = FileInfo(media_file)
             code, _ = run_cli(str(media_file), "--info")
-        assert code == 2
+        assert code == 1
 
 
 class TestConsole:

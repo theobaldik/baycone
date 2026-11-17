@@ -238,3 +238,32 @@ class TestVideoArgs:
 
     def test_tonemap_states_the_source_transfer(self):
         assert ffmpeg.get_filter_tonemap("arib-std-b67").startswith("zscale=tin=arib-std-b67:")
+
+
+def cut_commands(start: float | None, end: float | None) -> list[list[str]]:
+    """Every command that reads the source and so takes a cut."""
+    cut = {"start": start, "end": end}
+    return [
+        ffmpeg.get_cmd_encode_movie_pass_1(INPUT, PASSLOG, "h264", 2250, [], **cut),
+        ffmpeg.get_cmd_encode_movie_pass_2(INPUT, OUTPUT, PASSLOG, "h264", 2250, [], TRACKS, **cut),
+        ffmpeg.get_cmd_encode_audio(INPUT, OUTPUT, TRACKS, **cut),
+        ffmpeg.get_cmd_optimize(INPUT, OUTPUT, TRACKS, encoded=False, **cut),
+        ffmpeg.get_cmd_cropdetect(INPUT, **cut),
+        ffmpeg.get_cmd_extract_subtitle(INPUT, OUTPUT, 1, copy=True, **cut),
+    ]
+
+
+class TestCut:
+    def test_is_an_input_option(self):
+        """After `-i` it would cut the output, and `-to` would no longer be on the source's timeline."""
+        for cmd in cut_commands(5.0, 20.0):
+            i = cmd.index("-i")
+            assert cmd[i - 4 : i] == ["-ss", "5.000", "-to", "20.000"]
+
+    def test_only_the_ends_that_are_set(self):
+        assert all(value_of(cmd, "-ss") == ["5.000"] and "-to" not in cmd for cmd in cut_commands(5.0, None))
+        assert all(value_of(cmd, "-to") == ["20.000"] and "-ss" not in cmd for cmd in cut_commands(None, 20.0))
+
+    def test_default_commands_have_no_cut(self):
+        for cmd in all_commands():
+            assert "-ss" not in cmd and "-to" not in cmd

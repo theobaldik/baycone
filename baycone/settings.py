@@ -96,6 +96,9 @@ class EncodingSettings(Serializable):
     limit_video_height: int = 1080
     limit_audio_channel_bitrate: int = 96
 
+    # Encodes the video even within every limit, e.g. so `Job.start` cuts it frame-accurately; audio keeps its rules
+    force_video_encode: bool = False
+
     # Turned off for filesystems that report a free space that is not there to use
     check_free_space: bool = True
 

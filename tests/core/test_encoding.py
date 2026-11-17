@@ -12,9 +12,10 @@ import pytest
 from baycone import ffmpeg
 from baycone.audio import AudioStream, AudioTrack
 from baycone.encoding import Analyzer, Encoder, FileInfo, Job, VideoStream
-from baycone.errors import BayconeError, InsufficientSpaceError
+from baycone.errors import BayconeError, InsufficientSpaceError, InvalidCutError
 from baycone.files import file_signature
 from baycone.settings import EncodingSettings
+from baycone.subtitles import SubtitleStream
 
 DiskUsage = namedtuple("DiskUsage", "total used free")
 
@@ -258,7 +259,7 @@ class TestGetFileInfo:
         assert "mov" in info.containers
 
     def test_duration_parsed(self, media_file):
-        assert self._info(media_file, duration=1234.9).duration == 1234
+        assert self._info(media_file, duration=1234.9).duration == 1234.9
 
     def test_video_codec_extracted(self, media_file):
         assert self._info(media_file, video_codec="hevc").video_stream.codec == "hevc"
@@ -476,7 +477,7 @@ class TestEncoderProcess:
         detect = MagicMock()
         info = self._file_info(media_file, video_shall_encode=True)
         self._process(Encoder(), info, media_file, detect_crop={"new": detect})
-        detect.assert_called_once_with(media_file, info.video_stream)
+        detect.assert_called_once_with(media_file, info.video_stream, None, None)
 
     def test_logs_a_headline_before_anything_else(self, media_file, work_dirs, caplog):
         caplog.set_level("INFO")
@@ -719,6 +720,12 @@ class TestSubtitles:
 class TestVideoEncodeDecision:
     def _video(self, media_file: Path, **kwargs) -> VideoStream:
         return analyze(media_file, make_ffprobe_output(**kwargs)).video_stream
+
+    def test_encoded_within_limits_when_forced(self, media_file, settings):
+        settings.force_video_encode = True
+        info = analyze(media_file, make_ffprobe_output())
+        assert info.video_stream.shall_encode is True
+        assert [track.stream.shall_encode for track in info.audio_tracks] == [False]
 
     def test_copied_when_within_limits(self, media_file):
         assert self._video(media_file).shall_encode is False
@@ -1409,6 +1416,12 @@ class TestFirstPassResume:
         media_file.write_text("another movie")
         assert self._encode(self._encoder(media_file), make_popen_mock(), make_popen_mock()) == (True, ["1st", "2nd"])
 
+    def test_changed_cut_repeats_the_first_pass(self, media_file, work_dirs):
+        self._interrupted_second_pass(media_file)
+        encoder = self._encoder(media_file)
+        encoder._job.start = 5.0
+        assert self._encode(encoder, make_popen_mock(), make_popen_mock()) == (True, ["1st", "2nd"])
+
     def test_changed_settings_repeat_the_first_pass(self, media_file, work_dirs, settings):
         self._interrupted_second_pass(media_file)
         settings.target_video_bitrate = 1500
@@ -1454,3 +1467,150 @@ class TestFirstPassResume:
         ):
             self._encoder(media_file)._encode()
         assert synced == [("passlog-0.log", False)]
+
+
+def cut_of(cmd: list[str]) -> list[str]:
+    """The `-ss` / `-to` input options; they must never follow `-i`, where they would cut the output instead."""
+    head, tail = cmd[: cmd.index("-i")], cmd[cmd.index("-i") :]
+    assert "-ss" not in tail and "-to" not in tail
+    return [arg for i, option in enumerate(head) if option in ("-ss", "-to") for arg in head[i : i + 2]]
+
+
+class TestCut:
+    CUT = ["-ss", "5.000", "-to", "20.000"]
+
+    def _encoder(
+        self,
+        media_file: Path,
+        start: float | None = 5.0,
+        end: float | None = 20.0,
+        encode_video: bool = True,
+        duration: float = 100.0,
+    ) -> Encoder:
+        encoder = encoder_for(
+            FileInfo(
+                media_file,
+                is_valid=True,
+                duration=duration,
+                video_stream=VideoStream(
+                    codec="h264", bitrate=2000, width=1920, height=1080, shall_encode=encode_video
+                ),
+                audio_tracks=[AudioTrack(AudioStream(codec="ac3", channels=2, shall_encode=True), bitrate=128)],
+                subtitle_tracks=[SubtitleStream(index=0, codec="subrip", lang="eng")],
+            )
+        )
+        encoder._job.start, encoder._job.end = start, end
+        return encoder
+
+    @staticmethod
+    def _popen_cmds(run: callable, count: int) -> list[list[str]]:
+        with patch(
+            "baycone.encoding.subprocess.Popen", side_effect=[make_popen_mock() for _ in range(count)]
+        ) as mock_popen:
+            run()
+        return [call.args[0] for call in mock_popen.call_args_list]
+
+    def test_both_passes_get_the_same_cut(self, media_file, work_dirs):
+        encoder = self._encoder(media_file)
+        cmds = self._popen_cmds(encoder._encode, 2)
+        assert [cut_of(cmd) for cmd in cmds] == [self.CUT, self.CUT]
+
+    def test_audio_only_encode_gets_the_cut(self, media_file, work_dirs):
+        encoder = self._encoder(media_file, encode_video=False)
+        assert [cut_of(cmd) for cmd in self._popen_cmds(encoder._encode, 1)] == [self.CUT]
+
+    def test_optimize_does_not_cut_an_encoded_file_again(self, media_file, work_dirs):
+        encoder = self._encoder(media_file)
+        assert [cut_of(cmd) for cmd in self._popen_cmds(lambda: encoder._optimize(encoded=True), 1)] == [[]]
+
+    def test_optimize_cuts_a_copied_source(self, media_file, work_dirs):
+        encoder = self._encoder(media_file, encode_video=False)
+        assert [cut_of(cmd) for cmd in self._popen_cmds(lambda: encoder._optimize(encoded=False), 1)] == [self.CUT]
+
+    def test_subtitles_get_the_cut(self, media_file, work_dirs):
+        encoder = self._encoder(media_file)
+        run_ffmpeg = MagicMock(side_effect=lambda cmd, step, path: Path(cmd[-1]).write_text("text"))
+        with patch.object(encoder, "_run_ffmpeg", run_ffmpeg):
+            encoder._extract_subtitles()
+        assert cut_of(run_ffmpeg.call_args.args[0]) == self.CUT
+
+    def test_crop_detection_gets_the_cut(self, media_file):
+        with patch("baycone.encoding.subprocess.run", return_value=MagicMock(stderr="")) as run:
+            Analyzer().detect_crop(media_file, VideoStream(height=1080), 5.0, 20.0)
+        assert cut_of(run.call_args.args[0]) == self.CUT
+
+    @pytest.mark.parametrize(
+        "start, end, expected",
+        [(5.0, None, ["-ss", "5.000"]), (None, 20.0, ["-to", "20.000"]), (0.0005, None, ["-ss", "0.001"])],
+    )
+    def test_only_the_ends_that_are_set_are_passed(self, media_file, work_dirs, start, end, expected):
+        encoder = self._encoder(media_file, start=start, end=end, encode_video=False)
+        assert [cut_of(cmd) for cmd in self._popen_cmds(encoder._encode, 1)] == [expected]
+
+    def test_progress_is_relative_to_the_cut(self, media_file, work_dirs):
+        encoder = self._encoder(media_file, start=5.0, end=25.0)
+        encoder._on_progress = MagicMock()
+        progress = make_popen_mock(lines=["out_time_us=10000000\n"])
+        with (
+            patch("baycone.encoding.subprocess.Popen", return_value=progress),
+            patch.object(encoder, "_kill_when_stalled"),
+        ):
+            encoder._run_ffmpeg(["ffmpeg"], "Optimizing")
+        assert encoder._on_progress.call_args.args == ("Optimizing", 50.0)
+
+    def test_free_space_counts_the_cut_only(self, media_file):
+        full = self._encoder(media_file, start=None, end=None)._required_space(True)
+        assert self._encoder(media_file, start=None, end=50.0)._required_space(True) == full // 2
+
+    def test_copied_video_is_said_to_start_at_a_keyframe(self, media_file, caplog):
+        caplog.set_level("INFO")
+        self._encoder(media_file, encode_video=False)._log_plan()
+        assert "copy from the keyframe before 0:00:05.000" in caplog.text
+
+    def test_encoded_video_is_cut_exactly(self, media_file, caplog):
+        caplog.set_level("INFO")
+        self._encoder(media_file)._log_plan()
+        assert "keyframe" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "start, end, duration, message",
+        [
+            (-1.0, None, 100.0, "is negative"),
+            (20.0, 10.0, 100.0, "is not before its end"),
+            (100.0, None, 100.0, "is not before its end"),
+            (None, 100.5, 100.0, "is past the end of the file, 0:01:40.000"),
+            (5.0, None, 0.0, "its duration is unknown"),
+        ],
+    )
+    def test_invalid_cut_is_rejected(self, media_file, start, end, duration, message):
+        with pytest.raises(InvalidCutError, match=message):
+            self._encoder(media_file, start=start, end=end, duration=duration)._validate_cut()
+
+    @pytest.mark.parametrize("start, end, duration", [(0.0, 100.0, 100.0), (None, None, 0.0), (99.9, None, 100.0)])
+    def test_valid_cut_is_accepted(self, media_file, start, end, duration):
+        self._encoder(media_file, start=start, end=end, duration=duration)._validate_cut()
+
+    def test_invalid_cut_fails_before_anything_is_written(self, media_file):
+        job = job_for(media_file)
+        job.start = 200.0
+        info = FileInfo(media_file, is_valid=True, duration=100.0, containers=["mp4"])
+        with patch.object(Analyzer, "analyze", return_value=info), patch("baycone.encoding.subprocess.Popen") as popen:
+            with pytest.raises(InvalidCutError):
+                Encoder().process(job)
+        popen.assert_not_called()
+        assert not job.output_file.exists()
+        assert not [path for path in job.work_dir.rglob("*") if path.is_file()]
+
+    def test_headline_names_the_cut(self, media_file, work_dirs, caplog):
+        caplog.set_level("INFO")
+        job = job_for(media_file)
+        job.start, job.end = 5.0, 20.0
+        info = FileInfo(media_file, is_valid=True, duration=100.0, containers=["mp4"])
+        encoder = Encoder()
+        with (
+            patch.object(Analyzer, "analyze", return_value=info),
+            patch.object(encoder, "_optimize", return_value=True),
+            patch.object(encoder, "_publish"),
+        ):
+            encoder.process(job)
+        assert caplog.messages[0] == "Processing 'movie.mp4' (0:00:15, cut 0:00:05.000 - 0:00:20.000)"

@@ -13,6 +13,10 @@ class InvalidFileError(BayconeError):
     """Unreadable, truncated or otherwise not a media file."""
 
 
+class InvalidCutError(BayconeError):
+    """`Job.start` / `Job.end` do not lie within the file, raised before anything is written."""
+
+
 class EncodingError(BayconeError):
     """FFmpeg failed, or the settings ask for something it cannot do."""
 

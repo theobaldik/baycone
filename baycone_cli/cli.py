@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -22,6 +23,11 @@ log = logging.getLogger(__name__)
 # A directory of the CLI's own: `.baycone` itself may hold a running service's state and work files
 DIR_WORK = Path(".baycone") / "cli"
 DIR_OUTPUT = Path("_baycone_processed")
+TIMESTAMP_PATTERN = re.compile(r"(?:(?:(\d+):)?(\d+):)?(\d+(?:\.\d+)?)")
+
+EXIT_FAILED = 1
+# What argparse exits with on an invalid argument
+EXIT_USAGE = 2
 # 128 + SIGINT, what shells report for a command stopped by Ctrl+C
 EXIT_INTERRUPTED = 130
 
@@ -64,6 +70,17 @@ def _language(value: str) -> str:
     if value.strip().lower() != "original" and len(value.strip()) != 3:
         raise argparse.ArgumentTypeError(f"must be a 3-letter ISO 639-2 code or 'original', got '{value}'")
     return value
+
+
+def _timestamp(value: str) -> float:
+    """`[[HH:]MM:]SS[.fff]` to seconds, as ffmpeg writes positions."""
+    match = TIMESTAMP_PATTERN.fullmatch(value.strip())
+    if match:
+        hours, minutes, seconds = match.groups()
+        # A unit below another one has to stay under 60, `1:75` is more likely a typo than 2:15
+        if not (minutes is not None and float(seconds) >= 60 or hours is not None and int(minutes) >= 60):
+            return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds)
+    raise argparse.ArgumentTypeError(f"must be a position as [[HH:]MM:]SS[.fff], got '{value}'")
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -113,11 +130,30 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="LANG",
         help="subtitle language to extract, repeatable",
     )
-    parser.add_argument("--remux-only", action="store_true", help="never encode, only remux into the target container")
+    parser.add_argument(
+        "--start",
+        type=_timestamp,
+        metavar="TIME",
+        help="cut from this position, [[HH:]MM:]SS[.fff]; a copied video starts at the keyframe before it",
+    )
+    parser.add_argument("--end", type=_timestamp, metavar="TIME", help="cut at this position, [[HH:]MM:]SS[.fff]")
+    # Remux copies every stream, a forced encode would be silently ignored
+    copy_or_encode = parser.add_mutually_exclusive_group()
+    copy_or_encode.add_argument(
+        "--remux-only", action="store_true", help="never encode, only remux into the target container"
+    )
+    copy_or_encode.add_argument(
+        "--force-video-encode",
+        action="store_true",
+        help="encode the video even when it is within every limit, so --start cuts it exactly",
+    )
     parser.add_argument("--info", action="store_true", help="print the analysis as JSON and exit")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg binary (default: %(default)s)")
     parser.add_argument("--ffprobe", default="ffprobe", help="ffprobe binary (default: %(default)s)")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.start is not None and args.end is not None and args.start >= args.end:
+        parser.error("--start must be before --end")
+    return args
 
 
 def build_settings(args: argparse.Namespace) -> EncodingSettings:
@@ -126,6 +162,7 @@ def build_settings(args: argparse.Namespace) -> EncodingSettings:
         target_video_bitrate=args.video_bitrate,
         target_audio_channel_bitrate=args.audio_bitrate,
         target_subtitle_languages=args.subtitles,
+        force_video_encode=args.force_video_encode,
     )
     if args.languages:
         settings.target_audio_languages = args.languages
@@ -166,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     input_file = args.input.absolute()
     if not input_file.is_file():
         print(f"Invalid file path: '{input_file}'", file=sys.stderr)
-        return 1
+        return EXIT_USAGE
 
     console = Console()
     logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[ConsoleHandler(console)], force=True)
@@ -187,23 +224,23 @@ def _run(args: argparse.Namespace, input_file: Path, console: Console) -> int:
     if args.info:
         info = Analyzer(settings, tools).analyze(input_file)
         print(json.dumps(info, default=_to_json, indent=2))
-        return 0 if info.is_valid else 2
+        return 0 if info.is_valid else EXIT_FAILED
 
     default_output = input_file.parent / DIR_OUTPUT / input_file.with_suffix(settings.target_extension).name
     output_file = (args.output or default_output).absolute()
     work_dir = (args.work_dir or input_file.parent / DIR_WORK).absolute()
 
-    job = Job(input_file=input_file, output_file=output_file, work_dir=work_dir)
+    job = Job(input_file=input_file, output_file=output_file, work_dir=work_dir, start=args.start, end=args.end)
     try:
         Encoder(settings, tools, on_progress=console.progress).process(job, remux_only=args.remux_only)
     except BayconeError as e:
         console.end_line()
         print(f"Error: {e}", file=sys.stderr)
-        return 2
+        return EXIT_FAILED
     except Exception as e:
         console.end_line()
         print(f"Unexpected error: {e}", file=sys.stderr)
-        return 2
+        return EXIT_FAILED
     finally:
         if args.work_dir is None:
             _remove_work_dir(work_dir)

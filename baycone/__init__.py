@@ -5,7 +5,14 @@ Encoder(EncodingSettings()).process(Job(input_file, output_file, work_dir))
 """
 
 from baycone.encoding import Analyzer, Encoder, FileInfo, Job, ProgressCallback, VideoStream
-from baycone.errors import BayconeError, EncodingError, InsufficientSpaceError, InvalidFileError, SourceChangedError
+from baycone.errors import (
+    BayconeError,
+    EncodingError,
+    InsufficientSpaceError,
+    InvalidCutError,
+    InvalidFileError,
+    SourceChangedError,
+)
 from baycone.settings import EncodingSettings, FFmpegTools
 
 __all__ = [
@@ -17,6 +24,7 @@ __all__ = [
     "FFmpegTools",
     "FileInfo",
     "InsufficientSpaceError",
+    "InvalidCutError",
     "InvalidFileError",
     "Job",
     "ProgressCallback",
