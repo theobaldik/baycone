@@ -1,15 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-11-18
 
 ### Changed
 
-- **Breaking:** Exit `baycone-cli` with `1` when the file could not be processed and with `2` on any invalid
-  argument, the other way round than before
+- **Breaking:** Exit `baycone-cli` with `1` when the file could not be processed and with `2` on any invalid argument,
+  the other way round than before
 - Report `FileInfo.duration` in seconds with their fraction instead of whole seconds
 - Process the files of a location alphabetically by their path instead of in the filesystem's order
-- Keep every file in progress in `.baycone/state.json`; older versions read the new file as empty and forget its
-  failed files
+- Keep every file in progress in `.baycone/state.json`; older versions read the new file as empty and forget its failed
+  files
 
 ### Added
 
@@ -17,10 +17,12 @@
 - Add the `force_video_encode` setting to encode the video even when it is within every limit
 - Add `--start`, `--end` and `--force-video-encode` to `baycone-cli`
 - Remux files, and encode the audio of files whose video is copied, while another file's video is being encoded
+- Document every public class and method of the library with docstrings
 
 ### Fixed
 
 - Stop `baycone-cli` cleanly on Ctrl+C instead of printing a traceback; a second Ctrl+C stops it at once
+- List `charset-normalizer` among the third-party components in `NOTICE`
 
 ## [0.7.0] - 2026-11-13
 
@@ -82,8 +84,8 @@
 
 ### Changed
 
-- Harden the Compose setup: no network, read-only root filesystem, all capabilities dropped and no privilege
-  escalation, limiting what a malicious media file could do through an ffmpeg vulnerability
+- Harden the Compose setup: no network, read-only root filesystem, all capabilities dropped and no privilege escalation,
+  limiting what a malicious media file could do through an ffmpeg vulnerability
 
 ### Removed
 
@@ -172,6 +174,7 @@ _Initial release._
 - Add PlantUML architecture and behavior diagrams in `docs/`
 - Add MIT license
 
+[0.8.0]: https://github.com/theobaldik/baycone/releases/tag/v0.8.0
 [0.7.0]: https://github.com/theobaldik/baycone/releases/tag/v0.7.0
 [0.6.0]: https://github.com/theobaldik/baycone/releases/tag/v0.6.0
 [0.5.1]: https://github.com/theobaldik/baycone/releases/tag/v0.5.1

@@ -1,7 +1,7 @@
 @startuml class_structure
 
 title Class Structure
-footer Version 2.0
+footer Version 3.0
 
 skinparam style strictuml
 hide circle
@@ -35,7 +35,7 @@ package "baycone <<PyPI: baycone>>" {
         - _settings : EncodingSettings
         - _tools : FFmpegTools
         + analyze(file_path : Path) : FileInfo
-        + detect_crop(file_path : Path, video : VideoStream)
+        + detect_crop(file_path : Path, video : VideoStream, start, end)
         - _get_file_info(file_path : Path) : FileInfo
         - _is_complete(file_path, start_time, duration) : bool
         - _get_ffprobe_result(file_path : Path) : dict | None
@@ -46,6 +46,8 @@ package "baycone <<PyPI: baycone>>" {
         + output_file : Path
         + work_dir : Path
         + name : str
+        + start : float | None
+        + end : float | None
         + passlog_path : Path
         + first_pass_path : Path
         + encoding_path : Path
@@ -59,7 +61,7 @@ package "baycone <<PyPI: baycone>>" {
         + file_path : Path
         + is_valid : bool
         + shall_remux : bool
-        + duration : int
+        + duration : float
         + containers : list<str>
         + video_stream : VideoStream
         + audio_streams : list<AudioStream>
@@ -111,6 +113,7 @@ package "baycone <<PyPI: baycone>>" {
         + allowed_containers / video / audio codecs
         + target_* : container, codecs, bitrates, languages
         + limit_* : video bitrate and height, audio bitrate
+        + force_video_encode : bool
         + check_free_space : bool
     }
 
@@ -127,6 +130,7 @@ package "baycone <<PyPI: baycone>>" {
     class BayconeError <<exception>>
     class InsufficientSpaceError <<exception>>
     class InvalidFileError <<exception>>
+    class InvalidCutError <<exception>>
     class EncodingError <<exception>>
     class SourceChangedError <<exception>>
 
@@ -151,33 +155,70 @@ package "baycone <<PyPI: baycone>>" {
 package "baycone_service <<Docker image, service/>>" {
     class Service {
         - _watchers : list<DirWatcher>
+        - _jobs : dict<Slot, RunningJob>
         - _stop_signal : bool
         - _config_file : FileChangeTracker
         + start() : int
         + stop()
         + main_loop()
-        - _process_next() : bool
-        - _process_file(file_path : Path) : bool
+        - _dispatch()
+        - _start(watcher, file_path : Path, slot : Slot)
+        - _collect_finished()
+        - _settle(job : RunningJob, stopping : bool)
         - _reload_config()
+        - _reconcile_watchers() : list<DirWatcher>
+    }
+
+    class RunningJob <<dataclass>> {
+        + process : BaseProcess
+        + watcher : DirWatcher
+        + file_path : Path
+    }
+
+    class Slot <<enum>> {
+        ENCODE
+        COPY
+    }
+
+    class job <<module, child process>> {
+        + run_job(located : LocatedFile, tools : FFmpegTools, slot : Slot)
+        + process_file(located, tools, slot) : JobResult
+    }
+
+    class JobResult <<enum, exit code>> {
+        DONE
+        FAILED
+        NO_SPACE
+        STOPPED
     }
 
     class DirWatcher {
         - _location_config : LocationConfig
         - _signatures : dict<Path, Signature>
+        - _running : set<Path>
+        - _slots : dict<Path, tuple<Signature, Slot>>
         - _state : State
         + special_dirs : SpecialDirs
-        + get_new_file() : Path | None
+        + scan() : list<Path>
+        + slot_of(file_path : Path) : Slot
+        + begin(file_path : Path) : bool
         + finish(file_path : Path, failed : bool)
+        + abandon(file_path : Path)
+        + update_config(location_config : LocationConfig)
         + retry_failed()
         + pause()
     }
 
     class State <<dataclass>> {
         + failed : dict<str, Signature>
-        + current : str
-        + attempts : int
+        + in_progress : dict<str, Attempt>
         + load(path) : State
         + save(path)
+    }
+
+    class Attempt <<dataclass>> {
+        + signature : Signature
+        + attempts : int
     }
 
     class LocatedFile <<dataclass>> {
@@ -187,7 +228,7 @@ package "baycone_service <<Docker image, service/>>" {
         + resolve(file_path) : LocatedFile
         + processed_path : Path
         + original_path : Path
-        + job() : Job
+        + job(slot : Slot) : Job
     }
 
     class layout <<module>> {
@@ -217,6 +258,7 @@ package "baycone_service <<Docker image, service/>>" {
         + temp_dir : Path
         + originals_dir : Path
         + processed_dir : Path
+        + copy_dir : Path
         + state_file : Path
         + create()
         + clear_workdirs()
@@ -259,16 +301,24 @@ AudioTrack --> AudioStream
 EncodingSettings --|> Serializable
 InsufficientSpaceError --|> BayconeError
 InvalidFileError --|> BayconeError
+InvalidCutError --|> BayconeError
 EncodingError --|> BayconeError
 SourceChangedError --|> BayconeError
 
 ' Service relations
 
 Service o-- DirWatcher : one per location
+Service o-- "0..2" RunningJob : one per slot
 Service ..> LocatedFile : resolves
-Service ..> Encoder : one per file
-Service ..> layout : archives the original
+Service ..> job : spawns one process per file
+RunningJob --> DirWatcher
+job ..> Encoder : one per file
+job ..> layout : archives the original
+job ..> JobResult : exits with
 DirWatcher --> State
+DirWatcher ..> Analyzer : probes the slot
+DirWatcher ..> Slot
+State *-- "0..*" Attempt
 DirWatcher --> SpecialDirs
 DirWatcher --> LocationConfig : resets and overrides
 LocatedFile --> LocationConfig

@@ -75,7 +75,7 @@ dependencies belong to the distribution that imports them: the library only has 
   `allowed_extensions`), `FFmpegTools` (binary paths) and `Serializable` / `_validate`, which reject a value of the
   wrong type at load rather than mid-run
 - `baycone/errors.py` — `BayconeError` and its subclasses `InsufficientSpaceError`, `InvalidFileError`,
-  `EncodingError`, `SourceChangedError`
+  `InvalidCutError`, `EncodingError`, `SourceChangedError`
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` (the analysis) and `Job`
   (input, output, work dir and the work paths derived from them). Both take settings and tools in the constructor and
   deep-copy the settings. A file is invalid when no packet lies near its declared end (`Analyzer._is_complete`, one
@@ -93,7 +93,8 @@ dependencies belong to the distribution that imports them: the library only has 
 - `baycone/ffmpeg.py` — CLI template lists with `{placeholder}` substitution (not f-strings). Do not hard-code paths in
   command lists. The binary itself is a placeholder too (`{ffmpeg}` / `{ffprobe}`), filled from the `tools` argument
   every `get_cmd_*` takes. Variable-length sections are spliced in at the `AUDIO_ARGS` / `VIDEO_ARGS` /
-  `VIDEO_CODEC_ARGS` elements by `_render()`, built from the `ARGS_*` and `FILTER_*` templates. Both encode passes
+  `VIDEO_CODEC_ARGS` / `CUT_ARGS` elements by `_render()`, built from the `ARGS_*` and `FILTER_*` templates; an unset
+  cut splices in nothing, so a job without one gets exactly the commands it always did. Both encode passes
   must get the same video filters. Everything codec-specific (encoder, pixel formats, per-pass args) lives in one
   `VideoCodec` entry of `VIDEO_CODECS`, keyed by `target_video_codec`; x265 needs the same GOP and rate-control
   params in both passes, and `-x265-params` values are `key=value` with no `:` inside a value
@@ -152,8 +153,8 @@ stderr through `on_progress`; `ConsoleHandler` ends that line before any log rec
 
 **`Encoder.process()` invariant:** it never touches the input file and returns `job.output_file`, or raises a
 `BayconeError` with no output left behind. The service archives the original only after `process()` returned; on any
-failure the original stays put, `_process_file()` returns `False` and the watcher skips the file until it changes — a
-failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it is within
+failure the original stays put, the job process exits `JobResult.FAILED` and the watcher skips the file until it
+changes — a failing file must never starve the queue. Only streams that need it are re-encoded: video is copied when it is within
 limits, and a container mismatch alone is fixed by the optimize remux; `remux_only=True` copies every stream. Black-bar
 detection (`Analyzer.detect_crop`) decodes keyframes of the whole file, so it only runs when the video is re-encoded
 anyway. `_cleanup_workdirs()` always runs (`finally`) and must not raise. A cut (`Job.start` / `Job.end`) is an
