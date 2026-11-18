@@ -315,6 +315,8 @@ Image tags use the plain version with no `v` prefix (`theobaldik/baycone:0.1.0`)
   service.
 - The image installs the service non-editable (`uv sync --package baycone-service --no-editable`), so the final stage
   holds only the venv, no source tree.
+- The badges in `docs/dockerhub-overview.md` are the header row of a table with no body, on purpose: Docker Hub's CSS
+  sets `img { display: block }`, so outside table cells every badge takes a line of its own, whatever the Markdown
 - `LICENSE` and `NOTICE` are copied to `/usr/share/doc/baycone/`: publishing the image distributes the software, so MIT
   attribution and the GPL notices for bundled Debian packages have to travel with the artifact, not just the repo.
 
