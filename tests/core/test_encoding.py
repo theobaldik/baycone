@@ -35,10 +35,12 @@ def make_ffprobe_output(
     audio_lang: str = "eng",
     audio_disposition: dict[str, int] | None = None,
     subtitles: list[dict] | None = None,
+    size: int | None = None,
 ) -> str:
+    size_info = {} if size is None else {"size": str(size)}
     return json.dumps(
         {
-            "format": {"format_name": container, "duration": str(duration)},
+            "format": {"format_name": container, "duration": str(duration), **size_info},
             "streams": [
                 {
                     "codec_type": "video",
@@ -357,6 +359,22 @@ class TestGetFileInfo:
             }
         )
         assert analyze(media_file, payload, method="_get_file_info").video_stream.bitrate == 3000
+
+    def test_unknown_video_bitrate_estimated_from_the_size(self, media_file):
+        payload = make_ffprobe_output(video_bitrate=0, audio_bitrate=128_000, duration=100.0, size=25_000_000)
+        assert analyze(media_file, payload, method="_get_file_info").video_stream.bitrate == 2000 - 128
+
+    def test_unknown_audio_bitrate_counts_as_video(self, media_file):
+        payload = make_ffprobe_output(video_bitrate=0, audio_bitrate=0, duration=100.0, size=25_000_000)
+        assert analyze(media_file, payload, method="_get_file_info").video_stream.bitrate == 2000
+
+    def test_reported_video_bitrate_is_not_estimated(self, media_file):
+        payload = make_ffprobe_output(video_bitrate=1_000_000, duration=100.0, size=25_000_000)
+        assert analyze(media_file, payload, method="_get_file_info").video_stream.bitrate == 1000
+
+    def test_no_estimate_without_a_duration(self, media_file):
+        payload = make_ffprobe_output(video_bitrate=0, duration="N/A", size=25_000_000)
+        assert analyze(media_file, payload, method="_get_file_info").video_stream.bitrate == 0
 
     def test_no_audio_streams_on_video_only_file(self, media_file):
         payload = json.dumps(
@@ -732,6 +750,12 @@ class TestVideoEncodeDecision:
 
     def test_encoded_when_bitrate_is_unknown(self, media_file):
         assert self._video(media_file, video_bitrate=0).shall_encode is True
+
+    def test_copied_when_estimated_bitrate_is_within_limits(self, media_file):
+        assert self._video(media_file, video_bitrate=0, size=25_000_000).shall_encode is False
+
+    def test_encoded_when_estimated_bitrate_is_over_the_limit(self, media_file):
+        assert self._video(media_file, video_bitrate=0, size=50_000_000).shall_encode is True
 
     def test_encoded_when_10_bit(self, media_file):
         assert self._video(media_file, video_pix_fmt="yuv420p10le").shall_encode is True

@@ -106,7 +106,7 @@ def _is_special(stream: dict) -> bool:
 
 @dataclass
 class VideoStream:
-    """The probed video stream; `bitrate` in kbps, 0 when unknown."""
+    """The probed video stream; `bitrate` in kbps, estimated from the file size when not reported, 0 when unknown."""
 
     shall_encode: bool = False
     codec: str = ""
@@ -292,6 +292,13 @@ class Analyzer:
         bitrate = stream.get("bit_rate") or stream.get("tags", {}).get("BPS")
         return int(_parse_number(bitrate)) // 1000
 
+    @staticmethod
+    def _estimate_video_bitrate(format_info: dict, duration: float, audio_streams: list[AudioStream]) -> int:
+        """In kbps, 0 when the size is unknown. Audio of unknown bitrate counts as video, erring toward encoding."""
+        size = _parse_number(format_info.get("size"))
+        audio = sum(stream.overall_bitrate for stream in audio_streams)
+        return max(int(size * 8 / 1000 / duration) - audio, 0) if size > 0 else 0
+
     def _get_file_info(self, file_path: Path) -> FileInfo:
         probe_result = self._get_ffprobe_result(file_path)
 
@@ -336,6 +343,12 @@ class Analyzer:
             audio_stream.special = _is_special(stream)
 
             file_info.audio_streams.append(audio_stream)
+
+        video = file_info.video_stream
+        if video.codec and not video.bitrate and duration > 0:
+            video.bitrate = Analyzer._estimate_video_bitrate(format_info, duration, file_info.audio_streams)
+            if video.bitrate:
+                log.info(f"Video bitrate unknown, estimated {_format_bitrate(video.bitrate)} from the file size")
 
         subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
         for index, stream in enumerate(subtitle_streams):
@@ -399,7 +412,8 @@ class Analyzer:
         if not any(c in settings.allowed_containers for c in file_info.containers):
             file_info.shall_remux = True
 
-        # An unknown bitrate cannot be checked against the limit, the encode then targets the configured one
+        # A bitrate neither reported nor estimated cannot be checked against the limit, the encode then targets the
+        # configured one
         video = file_info.video_stream
         if (
             video.codec not in settings.allowed_video_codecs

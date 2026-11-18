@@ -46,7 +46,9 @@ plain MP4 that any player handles.
   kept when `target_container` is Matroska.
 - Subtitles are never kept in the output; text ones can be extracted to external `.srt` files, bitmap ones (PGS,
   VobSub) are dropped.
-- A file whose bitrate is not reported is always re-encoded, even when it would be within the limits.
+- An unreported video bitrate is estimated from the file size and duration, minus the reported audio bitrates. Audio
+  whose bitrate is not reported counts as video, so such a file may be re-encoded although it is within the limits,
+  and that audio is always re-encoded.
 - Two sources that differ only in their extension (`movie.mkv` and `movie.avi`) produce the same `movie.mp4`; the one
   processed later replaces the other's output. Both originals are kept.
 - An encode interrupted during its first pass, or part-way through its second, repeats that pass from the start.

@@ -202,7 +202,8 @@ CLI's `main()` — importing a module must not configure logging. The core logs 
 - Type hints mandatory on all function signatures and class attributes
 - Audio bitrate is **per-channel** (`target_audio_channel_bitrate × channels`)
 - Source bitrates are converted to their h264 / aac equivalent (`H264_EFFICIENCY`, `AAC_EFFICIENCY`, built in, not
-  configurable) before any limit check or cap; an unknown bitrate stays 0
+  configurable) before any limit check or cap; an unknown bitrate stays 0, except the video's of a valid file, which
+  `Analyzer` estimates from the format size and duration minus the known audio bitrates
 - `Config → DefaultsConfig → LocationConfig` hierarchy; every location inherits defaults and can override
   (`Config.from_dict` seeds each location with `defaults.to_dict()` before applying its own keys)
 - Audio languages are ISO 639-2, normalized to the /T code (`cze` → `ces`) by `normalize_language()` (backed by
