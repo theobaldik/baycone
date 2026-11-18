@@ -5,9 +5,9 @@ description: Prepare the baycone repo for a new release — fix outdated docs, r
 
 # Prepare a release
 
-Prepares the working tree for `chore: release X.Y.Z`. The user commits, tags and publishes; never run `git commit`,
-`git tag`, `git push`, `uv publish` or `docker push` here. AGENTS.md holds the rules this follows (versions,
-changelog format, branches); read its *Branching and releases* and *Changelog and commits* sections first.
+Prepares the working tree for `chore: release X.Y.Z`. The user commits, tags and publishes (the tag push publishes to
+PyPI); never run `git commit`, `git tag`, `git push`, `uv publish` or `docker push` here. AGENTS.md holds the rules
+this follows (versions, changelog format, branches); read its *Branching and releases* and *Changelog and commits* sections first.
 
 Work through the steps in order and stop at the first one that fails: a failure must leave no version bump behind.
 The bump is the last thing that changes files.
@@ -41,7 +41,7 @@ docs' own style and in American English. Never edit released changelog sections.
 | Library API | `__all__` in `baycone/__init__.py` and the `BayconeError` subclasses against "Using as a library" in `README.md` and "Library" in `docs/pypi-overview.md` |
 | Features and limitations | each user-facing change since the last tag (step 4's log) reflected in `README.md` *Features* / *Limitations* and, for the image, `docs/dockerhub-overview.md` |
 | AGENTS.md | the test count (from step 3), every module of `baycone/`, `baycone_cli/` and `service/baycone_service/` described, and every backticked identifier it names still existing (`grep -rn` it in the code) |
-| Pins | the `uv` version in `Dockerfile`, `.github/workflows/tests.yml` and AGENTS.md agree |
+| Pins | the `uv` version in `Dockerfile`, `.github/workflows/tests.yml`, `.github/workflows/release.yml` and AGENTS.md agree |
 | PyPI page | `docs/pypi-overview.md` uses absolute links only (relative ones break on PyPI): `grep -n '](' docs/pypi-overview.md` |
 | Diagrams | the symbols and flow in `docs/*.puml` match the code. After editing one, re-render it: `cd docs && plantuml -tsvg <name>.puml`, then `grep -il "syntax error" <name>.svg` must find nothing |
 
@@ -127,7 +127,6 @@ Then give the commands for the user to run, without running any of them:
 1. If step 2 changed docs, commit them first, as a separate `docs: ...` commit (stage those files only); then the
    rest as `chore: release X.Y.Z`. Both messages follow Conventional Commits, scope as in AGENTS.md.
 2. `git tag vX.Y.Z && git push origin <branch> vX.Y.Z`. The tag push makes `.github/workflows/release.yml` create the
-   GitHub release from the changelog section.
-3. PyPI: `uv build && uv publish`.
-4. Docker Hub: `docker compose build && docker compose push`. On a `support/` branch, drop `theobaldik/baycone:latest`
+   GitHub release from the changelog section, then publish to PyPI.
+3. Docker Hub: `docker compose build && docker compose push`. On a `support/` branch, drop `theobaldik/baycone:latest`
    from `build.tags` in `compose.yml` before pushing: `:latest` only ever moves for a release from `master`.

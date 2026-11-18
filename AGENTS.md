@@ -251,10 +251,12 @@ and its `baycone==` pin —, both packages in `uv.lock`, `compose.yml`, the `ima
 `docs/dockerhub-overview.md`). A new file that pins the release version must be added there. It neither commits nor
 tags — rename `## [Unreleased]` in `CHANGELOG.md` to the version, commit, then tag `v<version>` by hand. Pushing the
 tag runs `.github/workflows/release.yml`, which creates the GitHub release from that version's changelog section
-(headings promoted to `##` under `# What's Changed`) and fails when the section is missing.
+(headings promoted to `##` under `# What's Changed`) and fails when the section is missing or the tag doesn't match
+`project.version`.
 
-A release publishes both artifacts from that tag: `uv build` + `uv publish` for PyPI, `docker compose build` + push for
-Docker Hub. A release that only touches the service still publishes an unchanged `baycone` to PyPI — the version is
+A release publishes both artifacts from that tag. PyPI is automatic: once the GitHub release exists, the workflow runs
+`uv build` + `uv publish` through Trusted Publishing (the `pypi` environment, no token stored). Docker Hub is by hand:
+`docker compose build` + push. A release that only touches the service still publishes an unchanged `baycone` to PyPI — the version is
 shared on purpose.
 
 Image tags are declared in `compose.yml` under `build.tags` — always fully qualified as `theobaldik/baycone:...`, never
@@ -306,8 +308,8 @@ Image tags use the plain version with no `v` prefix (`theobaldik/baycone:0.1.0`)
 
 - Both base images are pinned to a patch version **and** a multi-arch index digest. Bump them deliberately; never loosen
   a pin back to a floating tag like `:latest`.
-- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.13.8`), as must the one in
-  `.github/workflows/tests.yml`.
+- The `uv` pin must track the uv version that maintains `uv.lock` (currently `0.13.8`), as must the ones in
+  `.github/workflows/tests.yml` and `.github/workflows/release.yml`.
 - The image runs as **uid/gid 1000, non-root** (`USER 1000:1000`). Anything the container writes goes into a
   bind-mounted library, so never add build steps that require root at runtime; hosts with different ids override
   `user:` rather than rebuilding.
