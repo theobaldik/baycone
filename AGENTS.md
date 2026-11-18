@@ -17,6 +17,8 @@
 - **Bump version:** `uvx bump-my-version bump patch|minor|major` — configured under `[tool.bumpversion]` in
   `pyproject.toml`; preview with `--dry-run -v`. Not a declared dev dependency either
 - **No linter or typecheck** command is configured
+- **Agent skills** live in `.agents/skills/` (`release` prepares a release); `.claude/skills` is a relative symlink to
+  it, so add new skills under `.agents/`, never under `.claude/`
 
 ## Requirements
 
