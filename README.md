@@ -175,9 +175,9 @@ A location can also be reconfigured at runtime without restarting the service by
 Removing it restores the location's settings from `config.yml`.
 
 `config.yml` itself is re-read whenever it changes; a file already being processed finishes with the settings it
-started with. A file that cannot be loaded is logged, and the previous configuration stays in use. In Docker, mount the directory holding the config, not
-the file: editors save by replacing the file, which a single-file bind mount does not see. Environment variables still
-need a restart.
+started with. A file that cannot be loaded is logged, and the previous configuration stays in use. In Docker, mount the
+directory holding the config, not the file: editors save by replacing the file, which a single-file bind mount does not
+see. Environment variables still need a restart.
 
 ### Failed and waiting files
 
@@ -213,7 +213,7 @@ There is usually no need to override the variables when running in Docker.
 # compose.yml
 services:
   baycone:
-    image: theobaldik/baycone:0.8.0
+    image: theobaldik/baycone:0.9.0
     user: "1000:1000"
     # Comes back after a crash or a reboot; interrupted files are picked up again
     restart: unless-stopped

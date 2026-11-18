@@ -28,7 +28,7 @@
 
 ## Test status
 
-`uv run pytest` is green on Linux (583 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
+`uv run pytest` is green on Linux (611 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
 On Windows three tests fail for platform reasons (CRLF, path separators, `os.fsync` mocking). No real
 `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run` and `subprocess.Popen` are mocked.
 
@@ -86,8 +86,9 @@ dependencies belong to the distribution that imports them: the library only has 
   picking `target_audio_languages` in order (`original` stands for the original track's language, which is kept when
   nothing matches), one track per language by `target_audio_channels`. An `und` stream has already taken
   `undefined_audio_language` by then (`_assume_language` in `Analyzer.analyze()`), so it is selected and tagged as that
-- `baycone/subtitles.py` — `SubtitleStream` and `select_subtitle_streams()` (text codecs only, `target_subtitle_languages`
-  in order; an `und` stream has taken `undefined_subtitle_language` before), `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
+- `baycone/subtitles.py` — `SubtitleStream` and `select_subtitle_streams()` (text codecs only,
+  `target_subtitle_languages` in order; an `und` stream has taken `undefined_subtitle_language` before),
+  `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
   Extracted by `Encoder._extract_subtitles()` after publishing; a failure there only warns
 - `baycone/languages.py` — the ISO 639 tables behind `normalize_language()` and `language_suffix()`;
   `tests/core/test_languages.py` checks them against `pycountry`, a dev dependency only
