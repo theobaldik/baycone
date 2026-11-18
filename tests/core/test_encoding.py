@@ -1614,3 +1614,60 @@ class TestCut:
         ):
             encoder.process(job)
         assert caplog.messages[0] == "Processing 'movie.mp4' (0:00:15, cut 0:00:05.000 - 0:00:20.000)"
+
+
+class TestUndefinedLanguage:
+    """`und` or untagged streams take the configured language, before the selection sees them."""
+
+    SUBTITLES = [{"codec_name": "subrip"}, {"codec_name": "subrip", "tags": {"language": "ger"}}]
+
+    def _analyze(self, media_file: Path, extra_audio: list[dict] | None = None, **kwargs) -> FileInfo:
+        output = json.loads(make_ffprobe_output(subtitles=self.SUBTITLES, **kwargs))
+        output["streams"] += extra_audio or []
+        return analyze(media_file, json.dumps(output))
+
+    @pytest.mark.parametrize("tag", ["und", ""], ids=["und", "untagged"])
+    def test_undefined_audio_takes_the_language(self, media_file, settings, tag):
+        settings.undefined_audio_language = "eng"
+        assert self._analyze(media_file, audio_lang=tag).audio_streams[0].lang == "eng"
+
+    def test_tagged_audio_is_kept(self, media_file, settings):
+        settings.undefined_audio_language = "eng"
+        assert self._analyze(media_file, audio_lang="ces").audio_streams[0].lang == "ces"
+
+    def test_undefined_is_kept_by_default(self, media_file):
+        info = self._analyze(media_file, audio_lang="und")
+        assert (info.audio_streams[0].lang, info.subtitle_streams[0].lang) == ("und", "und")
+
+    def test_language_is_normalized(self, media_file, settings):
+        settings.undefined_audio_language = "CZE"
+        assert self._analyze(media_file, audio_lang="und").audio_streams[0].lang == "ces"
+
+    def test_audio_setting_leaves_subtitles_alone(self, media_file, settings):
+        settings.undefined_audio_language = "eng"
+        assert self._analyze(media_file).subtitle_streams[0].lang == "und"
+
+    def test_undefined_subtitle_takes_its_own_language(self, media_file, settings):
+        settings.undefined_audio_language, settings.undefined_subtitle_language = "eng", "ces"
+        info = self._analyze(media_file, audio_lang="und")
+        assert [s.lang for s in info.subtitle_streams] == ["ces", "deu"]
+        assert info.audio_streams[0].lang == "eng"
+
+    def test_assumed_language_counts_for_the_audio_selection(self, media_file, settings):
+        """Otherwise the `und` track would only ever be kept as the original."""
+        settings.undefined_audio_language = "eng"
+        settings.target_audio_languages = ["eng"]
+        other = {"codec_type": "audio", "codec_name": "aac", "channels": 2, "tags": {"language": "fra"}}
+        info = self._analyze(media_file, audio_lang="und", extra_audio=[other])
+        assert [track.stream.index for track in info.audio_tracks] == [0]
+
+    def test_assumed_language_counts_for_the_subtitle_selection(self, media_file, settings):
+        settings.undefined_subtitle_language = "eng"
+        settings.target_subtitle_languages = ["eng"]
+        assert [s.index for s in self._analyze(media_file).subtitle_tracks] == [0]
+
+    def test_output_is_tagged_with_it(self, media_file, settings):
+        settings.undefined_audio_language = "eng"
+        info = self._analyze(media_file, audio_lang="und")
+        cmd = ffmpeg.get_cmd_optimize(media_file, media_file, info.audio_tracks, encoded=False)
+        assert cmd[cmd.index("-metadata:s:a:0") + 1] == "language=eng"

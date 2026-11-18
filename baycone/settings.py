@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, field, fields
 
 log = logging.getLogger(__name__)
 
+# A single ISO 639-2 code each, empty for none
+LANGUAGE_KEYS: tuple[str, ...] = ("undefined_audio_language", "undefined_subtitle_language")
+
 
 def _validate(key: str, value: object, default: object) -> None:
     """A value has to be of its default's kind; a wrong one would only blow up later, mid-run."""
@@ -17,6 +20,9 @@ def _validate(key: str, value: object, default: object) -> None:
         valid = isinstance(value, list) and all(isinstance(item, str) for item in value)
     else:
         valid = isinstance(value, type(default))
+    # A name like 'english' would otherwise tag every such track with it
+    if valid and key in LANGUAGE_KEYS:
+        valid = value == "" or (len(value.strip()) == 3 and value.strip().isalpha())
 
     if not valid:
         raise ValueError(f"Invalid value {value!r} for configuration key '{key}'")
@@ -91,6 +97,10 @@ class EncodingSettings(Serializable):
 
     # Text subtitles of these languages are extracted to `<name>.<lang>.srt` next to the output file
     target_subtitle_languages: list[str] = field(default_factory=list)
+
+    # Assumed for streams tagged `und` or not tagged at all, before the selection; empty keeps `und`
+    undefined_audio_language: str = ""
+    undefined_subtitle_language: str = ""
 
     limit_video_bitrate: int = 2800
     limit_video_height: int = 1080

@@ -57,6 +57,22 @@ class TestArguments:
         assert settings.target_video_codec == "hevc"
         assert settings.target_subtitle_languages == ["eng"]
 
+    def test_undefined_languages_are_passed_on(self, media_file):
+        _, encoder = run_cli(str(media_file), "--undefined-language", "eng", "--undefined-subtitle-language", "cze")
+        settings = encoder.call_args.args[0]
+        assert (settings.undefined_audio_language, settings.undefined_subtitle_language) == ("eng", "cze")
+
+    def test_undefined_languages_are_off_by_default(self, media_file):
+        settings = run_cli(str(media_file))[1].call_args.args[0]
+        assert (settings.undefined_audio_language, settings.undefined_subtitle_language) == ("", "")
+
+    @pytest.mark.parametrize("value", ["english", "en", "original", "e1g"])
+    def test_undefined_language_must_be_a_code(self, media_file, value, capsys):
+        with pytest.raises(SystemExit) as exit_:
+            run_cli(str(media_file), "--undefined-language", value)
+        assert exit_.value.code == 2
+        assert f"must be a 3-letter ISO 639-2 code, got '{value}'" in capsys.readouterr().err
+
     def test_languages_default_to_the_service_defaults(self, media_file):
         _, encoder = run_cli(str(media_file))
         assert encoder.call_args.args[0].target_audio_languages == ["original", "eng", "cze"]

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from baycone import ffmpeg
 from baycone.audio import (
     SPECIAL_DISPOSITIONS,
+    UNDEFINED_LANGUAGE,
     AudioStream,
     AudioTrack,
     cap_bitrate,
@@ -87,6 +88,15 @@ def _parse_number(value: object) -> float:
 def _language(stream: dict) -> str:
     tags = stream.get("tags", {})
     return normalize_language(tags.get("language") or tags.get("LANGUAGE") or tags.get("lang", ""))
+
+
+def _assume_language(streams: list[AudioStream] | list[SubtitleStream], language: str) -> None:
+    """Gives the streams without a language `language`, unless that is empty."""
+    if not language:
+        return
+    for stream in streams:
+        if stream.lang == UNDEFINED_LANGUAGE:
+            stream.lang = normalize_language(language)
 
 
 def _is_special(stream: dict) -> bool:
@@ -408,6 +418,8 @@ class Analyzer:
             if not 0 < stream.aac_channel_bitrate <= settings.limit_audio_channel_bitrate:
                 stream.shall_encode = True
 
+        _assume_language(file_info.audio_streams, settings.undefined_audio_language)
+        _assume_language(file_info.subtitle_streams, settings.undefined_subtitle_language)
         file_info.audio_tracks = select_audio_tracks(file_info.audio_streams, settings)
         file_info.subtitle_tracks = select_subtitle_streams(file_info.subtitle_streams, settings)
 

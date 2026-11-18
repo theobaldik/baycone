@@ -49,20 +49,22 @@ baycone-cli trailer.mp4 --start 0:07 --end 2:21.5 --force-video-encode  # frame-
 baycone-cli movie.mkv --info                   # print the analysis as JSON and exit
 ```
 
-| Flag                    | Default                | Description                                             |
-|-------------------------|------------------------|---------------------------------------------------------|
-| `--output`              | `_baycone_processed/`  | Output file                                             |
-| `--work-dir`            | `.baycone/cli/`        | Temporary files; the default one is removed afterwards  |
-| `-l`, `--language`      | `original` `eng` `cze` | Audio language to keep, repeatable, in order            |
-| `-v`, `--video-bitrate` | `2250`                 | Target video bitrate in kbps                            |
-| `-a`, `--audio-bitrate` | `64`                   | Target audio bitrate per channel in kbps                |
-| `--codec`               | `h264`                 | Target video codec, `h264` or `hevc`                    |
-| `--subtitles`           | none                   | Subtitle language to extract to `.srt`, repeatable      |
-| `--start`, `--end`      | none                   | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
-| `--force-video-encode`  | off                    | Encode the video even within every limit                |
-| `--remux-only`          | off                    | Copy every stream, only remux into the target container |
-| `--info`                | off                    | Print the analysis as JSON and exit                     |
-| `--ffmpeg`, `--ffprobe` | `ffmpeg`, `ffprobe`    | Binaries to use                                         |
+| Flag                            | Default                | Description                                             |
+|---------------------------------|------------------------|---------------------------------------------------------|
+| `--output`                      | `_baycone_processed/`  | Output file                                             |
+| `--work-dir`                    | `.baycone/cli/`        | Temporary files; the default one is removed afterwards  |
+| `-l`, `--language`              | `original` `eng` `cze` | Audio language to keep, repeatable, in order            |
+| `-v`, `--video-bitrate`         | `2250`                 | Target video bitrate in kbps                            |
+| `-a`, `--audio-bitrate`         | `64`                   | Target audio bitrate per channel in kbps                |
+| `--codec`                       | `h264`                 | Target video codec, `h264` or `hevc`                    |
+| `--subtitles`                   | none                   | Subtitle language to extract to `.srt`, repeatable      |
+| `--undefined-language`          | keep `und`             | Audio language assumed for tracks without one           |
+| `--undefined-subtitle-language` | keep `und`             | Subtitle language assumed for streams without one       |
+| `--start`, `--end`              | none                   | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
+| `--force-video-encode`          | off                    | Encode the video even within every limit                |
+| `--remux-only`                  | off                    | Copy every stream, only remux into the target container |
+| `--info`                        | off                    | Print the analysis as JSON and exit                     |
+| `--ffmpeg`, `--ffprobe`         | `ffmpeg`, `ffprobe`    | Binaries to use                                         |
 
 A cut is exact only when the video is encoded: a copied video starts at the keyframe before `--start`, so add
 `--force-video-encode` for a source that is already within limits.

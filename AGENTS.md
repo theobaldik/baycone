@@ -73,7 +73,7 @@ dependencies belong to the distribution that imports them: the library only has 
   and the errors. `py.typed` marks the package as typed (PEP 561)
 - `baycone/settings.py` — `EncodingSettings` (every per-file setting, the `defaults` section of `config.yml` minus
   `allowed_extensions`), `FFmpegTools` (binary paths) and `Serializable` / `_validate`, which reject a value of the
-  wrong type at load rather than mid-run
+  wrong type at load rather than mid-run — and, for the `LANGUAGE_KEYS`, anything but empty or a 3-letter code
 - `baycone/errors.py` — `BayconeError` and its subclasses `InsufficientSpaceError`, `InvalidFileError`,
   `InvalidCutError`, `EncodingError`, `SourceChangedError`
 - `baycone/encoding.py` — `Analyzer` (ffprobe), `Encoder` (ffmpeg two-pass), `FileInfo` (the analysis) and `Job`
@@ -84,9 +84,10 @@ dependencies belong to the distribution that imports them: the library only has 
   seek lands on the keyframe before its target, so the first packet alone says nothing
 - `baycone/audio.py` — `AudioStream` (probed), `AudioTrack` (output) and `select_audio_tracks()`, a pure function
   picking `target_audio_languages` in order (`original` stands for the original track's language, which is kept when
-  nothing matches), one track per language by `target_audio_channels`
+  nothing matches), one track per language by `target_audio_channels`. An `und` stream has already taken
+  `undefined_audio_language` by then (`_assume_language` in `Analyzer.analyze()`), so it is selected and tagged as that
 - `baycone/subtitles.py` — `SubtitleStream` and `select_subtitle_streams()` (text codecs only, `target_subtitle_languages`
-  in order), `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
+  in order; an `und` stream has taken `undefined_subtitle_language` before), `language_suffix()` (`ces` → `cs`) and `ensure_utf8()` (charset detection via `charset-normalizer`).
   Extracted by `Encoder._extract_subtitles()` after publishing; a failure there only warns
 - `baycone/languages.py` — the ISO 639 tables behind `normalize_language()` and `language_suffix()`;
   `tests/core/test_languages.py` checks them against `pycountry`, a dev dependency only

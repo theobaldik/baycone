@@ -83,6 +83,13 @@ def _timestamp(value: str) -> float:
     raise argparse.ArgumentTypeError(f"must be a position as [[HH:]MM:]SS[.fff], got '{value}'")
 
 
+def _undefined_language(value: str) -> str:
+    # Unlike `_language`, no `original`: there is no original track to take a language from
+    if len(value.strip()) != 3 or not value.strip().isalpha():
+        raise argparse.ArgumentTypeError(f"must be a 3-letter ISO 639-2 code, got '{value}'")
+    return value
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     defaults = EncodingSettings()
     parser = argparse.ArgumentParser(prog="baycone-cli", description="Encode a single file the way the service does")
@@ -131,6 +138,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="subtitle language to extract, repeatable",
     )
     parser.add_argument(
+        "--undefined-language",
+        type=_undefined_language,
+        metavar="LANG",
+        help="language assumed for audio tracks without one (default: keep 'und')",
+    )
+    parser.add_argument(
+        "--undefined-subtitle-language",
+        type=_undefined_language,
+        metavar="LANG",
+        help="language assumed for subtitles without one (default: keep 'und')",
+    )
+    parser.add_argument(
         "--start",
         type=_timestamp,
         metavar="TIME",
@@ -162,6 +181,8 @@ def build_settings(args: argparse.Namespace) -> EncodingSettings:
         target_video_bitrate=args.video_bitrate,
         target_audio_channel_bitrate=args.audio_bitrate,
         target_subtitle_languages=args.subtitles,
+        undefined_audio_language=args.undefined_language or "",
+        undefined_subtitle_language=args.undefined_subtitle_language or "",
         force_video_encode=args.force_video_encode,
     )
     if args.languages:

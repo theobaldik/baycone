@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Add the `undefined_audio_language` and `undefined_subtitle_language` settings to assume a language for untagged
+  tracks
+- Add `--undefined-language` and `--undefined-subtitle-language` to `baycone-cli`
+
 ## [0.8.0] - 2026-11-18
 
 ### Changed

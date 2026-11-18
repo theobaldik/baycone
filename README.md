@@ -122,6 +122,8 @@ defaults:
   target_audio_languages: [ original, eng, cze ]  # kept in this order
   target_audio_channels: 2          # preferred channel count per language
   target_subtitle_languages: [ eng, cze ]  # optional, extracted to .srt files
+  undefined_audio_language: ""      # e.g. eng: assumed for audio tracks tagged und or untagged
+  undefined_subtitle_language: ""   # the same for subtitles
   check_free_space: true            # wait for disk space, see "Failed and waiting files"
 
 locations:
@@ -147,6 +149,9 @@ other audio track is dropped. `original` in the list stands for the **original l
 Polish first), and leaving it out drops the original. When none of the listed languages is found, the original is kept
 anyway, so a file never loses its audio.
 
+A track without a language (`und`, or no tag at all) counts as `undefined_audio_language` when that is set, e.g.
+`eng` for a location of English films: it is selected and tagged as that language. Left empty, it stays `und`.
+
 When a language has several tracks, the one with `target_audio_channels` channels wins; without an exact match, the
 fewest channels above it, otherwise the most channels below it. Tracks flagged as commentary, audio description,
 hearing impaired, karaoke or lyrics are never kept. The first track is the default one, and each track is tagged with
@@ -160,14 +165,15 @@ subtitle is extracted to an external SRT file next to the processed file, named 
 `mymovie.mp4` + `mymovie.cs.srt` + `mymovie.en.srt`. One file per language, in the configured list; bitmap subtitles
 (PGS, VobSub) and commentary or hearing-impaired streams are skipped, and there is no `original` shortcut. The SRT
 files are always written as UTF-8, a legacy codepage (e.g. Windows-1250) is detected and converted. A failed
-extraction is logged as a warning and never fails the file.
+extraction is logged as a warning and never fails the file. A subtitle stream without a language counts as
+`undefined_subtitle_language` when that is set, like audio does.
 
 A location can also be reconfigured at runtime without restarting the service by dropping a
 `.baycone/config.override.yml` file into it; it is re-read whenever it changes and applies to that location only.
 Removing it restores the location's settings from `config.yml`.
 
-`config.yml` itself is re-read whenever it changes, between files and never during an encode. A file that cannot be
-loaded is logged, and the previous configuration stays in use. In Docker, mount the directory holding the config, not
+`config.yml` itself is re-read whenever it changes; a file already being processed finishes with the settings it
+started with. A file that cannot be loaded is logged, and the previous configuration stays in use. In Docker, mount the directory holding the config, not
 the file: editors save by replacing the file, which a single-file bind mount does not see. Environment variables still
 need a restart.
 
@@ -292,20 +298,22 @@ baycone-cli trailer.mp4 --start 0:07 --end 2:21.5 --force-video-encode  # frame-
 baycone-cli movie.mkv --info                   # print the analysis as JSON and exit
 ```
 
-| Flag                    | Default                | Description                                             |
-|-------------------------|------------------------|---------------------------------------------------------|
-| `--output`              | `_baycone_processed/`  | Output file                                             |
-| `--work-dir`            | `.baycone/cli/`        | Temporary files; the default one is removed afterwards  |
-| `-l`, `--language`      | `original` `eng` `cze` | Audio language to keep, repeatable, in order            |
-| `-v`, `--video-bitrate` | `2250`                 | Target video bitrate in kbps                            |
-| `-a`, `--audio-bitrate` | `64`                   | Target audio bitrate per channel in kbps                |
-| `--codec`               | `h264`                 | Target video codec, `h264` or `hevc`                    |
-| `--subtitles`           | none                   | Subtitle language to extract to `.srt`, repeatable      |
-| `--start`, `--end`      | none                   | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
-| `--force-video-encode`  | off                    | Encode the video even within every limit                |
-| `--remux-only`          | off                    | Copy every stream, only remux into the target container |
-| `--info`                | off                    | Print the analysis as JSON and exit                     |
-| `--ffmpeg`, `--ffprobe` | `ffmpeg`, `ffprobe`    | Binaries to use                                         |
+| Flag                            | Default                | Description                                             |
+|---------------------------------|------------------------|---------------------------------------------------------|
+| `--output`                      | `_baycone_processed/`  | Output file                                             |
+| `--work-dir`                    | `.baycone/cli/`        | Temporary files; the default one is removed afterwards  |
+| `-l`, `--language`              | `original` `eng` `cze` | Audio language to keep, repeatable, in order            |
+| `-v`, `--video-bitrate`         | `2250`                 | Target video bitrate in kbps                            |
+| `-a`, `--audio-bitrate`         | `64`                   | Target audio bitrate per channel in kbps                |
+| `--codec`                       | `h264`                 | Target video codec, `h264` or `hevc`                    |
+| `--subtitles`                   | none                   | Subtitle language to extract to `.srt`, repeatable      |
+| `--undefined-language`          | keep `und`             | Audio language assumed for tracks without one           |
+| `--undefined-subtitle-language` | keep `und`             | Subtitle language assumed for streams without one       |
+| `--start`, `--end`              | none                   | Cut from / at a position, `[[HH:]MM:]SS[.fff]`          |
+| `--force-video-encode`          | off                    | Encode the video even within every limit                |
+| `--remux-only`                  | off                    | Copy every stream, only remux into the target container |
+| `--info`                        | off                    | Print the analysis as JSON and exit                     |
+| `--ffmpeg`, `--ffprobe`         | `ffmpeg`, `ffprobe`    | Binaries to use                                         |
 
 A cut is exact only when the video is encoded: a copied video starts at the keyframe before `--start`, so add
 `--force-video-encode` for a source that is already within limits.

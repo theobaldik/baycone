@@ -319,6 +319,11 @@ class TestValidation:
             "locations:\n  - movies",
             "locations:\n  - path: 5",
             "locations:\n  - path: movies\n    limit_video_height: tall",
+            "defaults:\n  undefined_audio_language: english",
+            "defaults:\n  undefined_audio_language: en",
+            "defaults:\n  undefined_audio_language: original",
+            "defaults:\n  undefined_audio_language: [eng]",
+            "locations:\n  - path: movies\n    undefined_subtitle_language: e1g",
         ],
     )
     def test_wrong_value_is_rejected(self, yaml_text):
@@ -337,6 +342,17 @@ class TestValidation:
 
     def test_empty_list_is_fine(self):
         assert parse("defaults:\n  target_subtitle_languages: []").defaults.target_subtitle_languages == []
+
+    def test_undefined_languages_are_off_by_default_and_set_per_location(self):
+        cfg = parse(
+            "defaults:\n  undefined_audio_language: eng\n"
+            "locations:\n  - path: movies\n  - path: czech\n    undefined_audio_language: cze\n"
+            "    undefined_subtitle_language: ces"
+        )
+        assert [(lc.undefined_audio_language, lc.undefined_subtitle_language) for lc in cfg.locations] == [
+            ("eng", ""),
+            ("cze", "ces"),
+        ]
 
     def test_free_space_check_is_on_by_default_and_overridable_per_location(self):
         cfg = parse("locations:\n  - path: movies\n  - path: nas\n    check_free_space: false")
