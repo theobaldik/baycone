@@ -28,6 +28,8 @@ plain MP4 that any player handles.
 - Strips all metadata and cover art, and tags every audio track with its language and channel layout
 - Skips files that already meet the target codec / container / bitrate requirements, only remuxes files whose
   container alone differs, and copies the video stream when only the audio needs re-encoding
+- Encodes the video of one file at a time, while files that only need a remux or their audio encoded are processed
+  alongside it instead of waiting for hours. Within a location, files are taken alphabetically by their path
 - Waits for files that are still being copied in, and never touches the original until the encoded result has been
   written successfully. A file that fails is left in place and retried once it is modified
 - Survives restarts, crashes and power loss: the library only ever gets complete files, an interrupted file is picked
@@ -49,6 +51,8 @@ plain MP4 that any player handles.
   processed later replaces the other's output. Both originals are kept.
 - An encode interrupted during its first pass, or part-way through its second, repeats that pass from the start.
 - Only one Baycone instance may run on a location at a time.
+- An encode and a remux running side by side each check the free space for themselves, so together they can need
+  more than either one checked for.
 - An aborted copy is recognized by data missing from the end of the duration the header declares. A copy cut off
   within its last 30 seconds, or any cut-off MPEG-TS (its duration is estimated from the data present), is still
   processed.
@@ -67,7 +71,8 @@ videos/
 │   ├── passlogfiles/       ← two-pass log files (temporary, kept for a resume)
 │   ├── encoded/            ← intermediate encoded files (temporary)
 │   ├── optimized/          ← finished files before they are moved into place (temporary)
-│   ├── state.json          ← failed files and the file in progress
+│   ├── copy/               ← the same for the remux running alongside an encode (temporary)
+│   ├── state.json          ← failed files and the files in progress
 │   └── config.override.yml ← optional, see Configuration
 ├── _baycone_originals/   ← original files are moved here after encoding
 └── _baycone_processed/   ← finished MP4s are moved here
@@ -175,8 +180,9 @@ after a restart. A failed file is tried again when
 - the configuration is reloaded, which may be the fix: edit or `touch` `config.yml` to retry the failed files of
   every location, or a location's `config.override.yml` to retry just its own.
 
-The same goes for a file the service died on three times in a row (a crash, a kill or a power loss, not a regular
-stop) and for an ffmpeg that made no progress for 30 minutes.
+The same goes for a file the service, or the process handling the file, died on three times in a row (a crash, a
+kill or a power loss, not a regular stop) and for an ffmpeg that made no progress for 30 minutes. A regular stop
+interrupts every file in progress, and they are picked up again on the next start.
 
 Before a file is processed, the free space of its location is compared with the expected size of the output. While
 there is too little, the file is not failed: the location is paused and checked again every 5 minutes, other

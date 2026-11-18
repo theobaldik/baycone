@@ -254,7 +254,12 @@ class TestSpecialDirs:
             dirs.processed_dir / "movie.mp4",
             tmp_path / "pending.mkv",
         ]
-        removed = [dirs.encoded_dir / "movie.mp4", dirs.optimized_dir / "Show" / "episode.mp4"]
+        removed = [
+            dirs.encoded_dir / "movie.mp4",
+            dirs.optimized_dir / "Show" / "episode.mp4",
+            dirs.copy_dir / Path(Constants.DIR_ENCODED.name) / "remuxed.mp4",
+            dirs.copy_dir / Path(Constants.DIR_OPTIMIZED.name) / "remuxed.mp4",
+        ]
         for file_path in kept + removed:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.touch()

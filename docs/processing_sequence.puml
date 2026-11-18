@@ -1,89 +1,103 @@
 @startuml processing_sequence
 
 title Processing Sequence
-footer Version 2.0
+footer Version 3.0
 
 skinparam style strictuml
 
-participant "Service" as service
+participant "Service\n(dispatcher)" as service
 participant "DirWatcher" as watcher
 participant "State" as state
-participant "LocatedFile" as located
+participant "Job process\n(encode / copy slot)" as job
 participant "Encoder" as encoder
 
 activate service
 
 loop until stopped (SIGTERM / Ctrl+C)
     opt config.yml changed
-        service -> service : reload config, rebuild watchers,\nretry failed files
+        service -> watcher : update_config(location config)
+        note right
+            A location keeps its watcher, so a running job keeps
+            its work dirs; only a new location gets a new one.
+        end note
+        service -> watcher : retry_failed()
     end
 
-    loop for each watched location
-        service -> watcher : get_new_file()
+    loop for each slot whose job process has exited
+        alt DONE / STOPPED
+            service -> watcher : finish(file_path, failed=False)
+        else FAILED
+            service -> watcher : finish(file_path, failed=True)
+        else NO_SPACE
+            service -> watcher : pause(), finish(file_path, failed=False)
+        else died (killed, crashed)
+            service -> service : kill the job's process group
+            service -> watcher : abandon(file_path)
+            note right: The attempt stays open, as for a service that died.
+        end
         activate watcher
-
-        opt config.override.yml changed
-            watcher -> watcher : reset to the base config, apply the override,\nunpause, retry failed files
-        end
-
-        alt location paused (waiting for free space)
-            watcher --> service : None
-        else
-            watcher -> watcher : walk, prune special dirs,\nfilter by allowed_extensions
-            watcher -> watcher : record size + mtime of every file
-
-            alt a file unchanged since the previous scan\nand not failed with this signature
-                watcher -> state : current file, attempts + 1
-                activate state
-                state --> watcher : saved
-                deactivate state
-                note right
-                    Over ""MAX_ATTEMPTS"" means the service died on it
-                    every time: the file is failed and skipped.
-                end note
-                watcher --> service : file_path
-            else new, still being written or failed
-                watcher --> service : None
-            end
-        end
+        watcher -> state : close the attempt, remember failed
         deactivate watcher
+    end
 
-        opt file_path returned
-            service -> located : resolve(file_path)
-            activate located
-            located --> service : location settings, job
-            deactivate located
-
-            service -> encoder : process(job)
-            activate encoder
-            encoder -> encoder : analyze, encode, optimize,\npublish, extract subtitles
-            note right: See encoding_sequence.puml
-            encoder --> service : output_file, or raises
-            deactivate encoder
-
-            alt published
-                service -> service : archive_original()
-            else InsufficientSpaceError
-                service -> watcher : pause()
-            else BayconeError or any other error
-                service -> service : failed = True
-            end
-
-            service -> watcher : finish(file_path, failed)
-            note right
-                Always, in a ""finally"" that a stop signal reaches too.
-                A failed file is skipped until it changes.
-            end note
+    opt a slot is free
+        loop for each watched location, while a slot is free
+            service -> watcher : scan()
             activate watcher
-            watcher -> state : clear current, remember failed
+            opt config.override.yml changed
+                watcher -> watcher : apply the override, unpause,\nretry failed files
+            end
+            watcher -> watcher : walk, prune special dirs,\nfilter by allowed_extensions
+            watcher --> service : files unchanged since the previous scan,\nnot failed, not running, alphabetically
             deactivate watcher
+
+            loop for each ready file, while a slot is free
+                service -> watcher : slot_of(file_path)
+                note right
+                    ffprobe once per file version: ENCODE when the
+                    video is encoded, otherwise COPY.
+                end note
+                opt its slot is free
+                    service -> watcher : begin(file_path)
+                    activate watcher
+                    watcher -> state : attempt + 1
+                    note right
+                        Over ""MAX_ATTEMPTS"" means the service or the job
+                        died on it every time: failed, and skipped.
+                    end note
+                    deactivate watcher
+                    service -> job ** : spawn(located file, tools, slot)
+                end
+            end
         end
     end
 
-    opt no file picked up
-        service -> service : sleep(poll_interval)
-    end
+    service -> service : wait for a job to exit,\nat most poll_interval
 end
+
+== in each job process ==
+
+activate job
+job -> encoder : process(job)
+activate encoder
+encoder -> encoder : analyze, encode, optimize,\npublish, extract subtitles
+note right: See encoding_sequence.puml
+encoder --> job : output_file, or raises
+deactivate encoder
+opt published
+    job -> job : archive_original()
+end
+job --> service : exit code (JobResult)
+deactivate job
+
+== on stop ==
+
+service -> job : SIGTERM
+note right
+    The job kills its ffmpeg and cleans up; one that does not
+    exit within ""STOP_TIMEOUT"" is killed. A stop never fails a file.
+end note
+service -> watcher : finish(file_path, failed=False)
 
 deactivate service
 

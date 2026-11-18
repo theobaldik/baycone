@@ -1,7 +1,7 @@
 @startuml processing_activity
 
 title Processing Activity
-footer Version 2.0
+footer Version 3.0
 
 start
 :Scan Watch Directory;
@@ -22,17 +22,39 @@ if (supported file found) then (yes)
         :Skip file until it is modified;
         stop
     endif
-    if (service died on it ""MAX_ATTEMPTS"" times) then (no)
+    if (already running) then (no)
+    else (yes)
+        stop
+    endif
+    :Probe the File for its Slot;
+    note right
+        Ready files are taken alphabetically by their path.
+        ""encode"" when the video is encoded, ""copy"" otherwise
+        (remux, maybe the audio encoded); cached per file version.
+    end note
+    if (its slot is free) then (yes)
+    else (no)
+        :Wait for the slot;
+        note right: The files behind it still get the other slot.
+        stop
+    endif
+    if (service or job died on it ""MAX_ATTEMPTS"" times) then (no)
     else (yes)
         :Mark File Failed;
         stop
     endif
 else (no)
-    :Sleep ""poll_interval"";
+    :Wait ""poll_interval"", or until a job ends;
     stop
 endif
 
 :Record Attempt in ""state.json"";
+
+:Start a Job Process for the Slot;
+note right
+    Everything below runs in it, alongside the job of the other slot.
+    Its work dir: "".baycone/"" for ""encode"", "".baycone/copy/"" for ""copy"".
+end note
 
 :Analyze File;
 note right
@@ -52,6 +74,7 @@ endif
 if (enough free space) then (yes)
 else (no)
     :Pause Location;
+    note left: Through the job's exit code.
     note right: Nothing written, the file is not failed.
     stop
 endif
@@ -65,10 +88,10 @@ if (video or selected audio outside limits) then (yes)
         else (yes)
         endif
         :Encode File 2<sup>nd</sup> Pass;
-        note right: "".baycone/encoded/<name>.mp4""
+        note right: ""<work dir>/encoded/<name>.mp4""
     else (no)
         :Encode Audio, Copy Video;
-        note right: Single pass, "".baycone/encoded/<name>.mp4""
+        note right: Single pass, ""<work dir>/encoded/<name>.mp4""
     endif
 else (no)
     note right: A container mismatch or dropped audio tracks alone are fixed by the remux below.
@@ -79,7 +102,7 @@ note right
     Remux with ""-c copy"", strip metadata,
     tag the audio tracks and move the moov
     atom to the front (""+faststart"").
-    "".baycone/optimized/<name>.mp4""
+    ""<work dir>/optimized/<name>.mp4""
 end note
 
 if (encoding and optimizing succeeded\nand the source is unchanged) then (yes)
@@ -111,9 +134,10 @@ note right
     Directories still holding files are kept.
 end note
 
-:Clear Attempt in ""state.json"";
+:Job Exits, Freeing its Slot;
 
-:Scan again without sleeping;
+:Clear Attempt in ""state.json"";
+note right: By the service, which starts the slot's next file right away.
 
 stop
 

@@ -26,7 +26,7 @@
 
 ## Test status
 
-`uv run pytest` is green on Linux (523 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
+`uv run pytest` is green on Linux (583 tests) and runs on every push and pull request (`.github/workflows/tests.yml`).
 On Windows three tests fail for platform reasons (CRLF, path separators, `os.fsync` mocking). No real
 `ffmpeg`/`ffprobe` process is ever spawned — `subprocess.run` and `subprocess.Popen` are mocked.
 
@@ -41,6 +41,10 @@ Tests mirror the packages: `tests/core/`, `tests/service/`, `tests/cli/`.
   - `location_config` — a `LocationConfig` registered in the global `config.locations` (required, or
     `LocatedFile.resolve` raises `ValueError: No 'LocationConfig' found`)
   - `location_dir` — the watched directory itself (`location_config.abspath`)
+- `tests/service/test_service.py` drives the dispatcher with a `FakeProcess` (fake pids), so an autouse fixture patches
+  `os.killpg` — a fake pid must never reach the real one; `tests/service/test_job.py` patches `os.setpgrp`, which
+  would detach pytest itself from the terminal. One test spawns a real job process (no ffmpeg needed) and one kills a
+  real process group, both of processes the test starts itself.
 
 Two tests guard against past data-loss/logic bugs — keep them:
 
@@ -97,31 +101,47 @@ dependencies belong to the distribution that imports them: the library only has 
 
 **`baycone_service` — the watching service.**
 
-- `service/baycone_service/service.py` — `Service` class + `main_loop`, `main()` for the `baycone-service` script and
-  `python -m baycone_service` (the Docker `ENTRYPOINT`). SIGTERM is turned into `KeyboardInterrupt` (PID 1 in a
-  container ignores it otherwise), and a running ffmpeg is killed on interruption. `config.yml` is hot-reloaded at the
-  top of each `main_loop` iteration (`FileChangeTracker` mtime check, the same one `DirWatcher` uses for
-  `config.override.yml`); a reload rebuilds the watchers, a failed one keeps the previous config. Docker mounts the
-  config **directory** — a single-file bind mount misses editors' write-and-rename saves. `_process_file()` builds an
-  `Encoder` per file from the location's settings and archives the original after a successful `process()`
+- `service/baycone_service/service.py` — `Service`, the **dispatcher**, + `main_loop`, `main()` for the
+  `baycone-service` script and `python -m baycone_service` (the Docker `ENTRYPOINT`). Two slots (`Slot` in
+  `layout.py`): `ENCODE` takes files whose video is encoded, `COPY` the rest (remux, maybe with the audio encoded), so
+  at most one video encode runs and cheap files never wait behind it. Each file runs in a child process of its own
+  (`multiprocessing`, **spawn**); only the dispatcher touches the watchers and their state. A loop iteration reloads
+  the config, collects exited jobs (`_settle` maps their `JobResult` exit code to `finish` / `pause` / `abandon`),
+  fills free slots (`_dispatch`) and waits on the jobs' sentinels for at most `poll_interval`. SIGTERM is turned into
+  `KeyboardInterrupt` (PID 1 in a container ignores it otherwise); `stop()` terminates the jobs, kills what is not
+  gone within `STOP_TIMEOUT` and never fails a file. A job that died without its cleanup gets its process group
+  killed, its ffmpeg would go on writing into the work dirs. `config.yml` is hot-reloaded at the top of each
+  iteration (`FileChangeTracker` mtime check, the same one `DirWatcher` uses for `config.override.yml`); a reload
+  keeps the watcher of every location still configured (`update_config`, also the one a running job holds) and
+  creates one only for a new location — a new watcher clears the work dirs. A failed reload keeps the previous config.
+  Docker mounts the config **directory** — a single-file bind mount misses editors' write-and-rename saves
+- `service/baycone_service/job.py` — the child process: `run_job()` sets up logging tagged with the slot, its own
+  process group and a SIGINT/SIGTERM handler, runs `process_file()` (an `Encoder` from the location's settings, the
+  original archived after a successful `process()`) and exits with a `JobResult`. Its codes stay clear of 1 and 2,
+  which Python itself exits with, so a crash is told apart from a failed file. `__main__.py` keeps its
+  `if __name__ == "__main__"` guard: spawn imports the main module in every child, which would start a service each
 - `service/baycone_service/config.py` — **Module-level global singleton** (`config: Config = Config()`). `load_config()`
   replaces its fields in place (removed keys fall back to defaults, a failed load leaves it untouched, an empty file is
   ignored). Other service modules import `from baycone_service.config import config` and read from it at runtime.
   `DefaultsConfig` extends `EncodingSettings` with `allowed_extensions`, `LocationConfig` adds `path`;
   `Config.tools()` gives the `FFmpegTools`. `Constants` and `SpecialDirs` (the location layout) live here too
 - `service/baycone_service/layout.py` — `LocatedFile.resolve()` finds a file's `LocationConfig`, derives its processed and
-  original paths and its `Job` (work dir `.baycone/`, the same `passlogfiles` / `encoded` / `optimized` folders as
-  `SpecialDirs`). `archive_original()` moves the original to `_baycone_originals/`
-- `service/baycone_service/state.py` — `State`, a location's `.baycone/state.json`: failed files and the file in progress with
-  its attempt count. Written atomically; an unreadable file starts empty, a failed save only warns
+  original paths and its `Job(slot)`: work dir `.baycone/` for `ENCODE` (the same `passlogfiles` / `encoded` /
+  `optimized` folders as `SpecialDirs`, so a first pass is resumed), `.baycone/copy/` for `COPY`, so the two jobs
+  never clear each other's files. `archive_original()` moves the original to `_baycone_originals/`
+- `service/baycone_service/state.py` — `State`, a location's `.baycone/state.json`: failed files and every file in progress
+  with its attempt count (`in_progress`; the single `current` file of older versions is migrated on load). Written
+  atomically; an unreadable file starts empty, a failed save only warns
 - `service/baycone_service/watcher.py` — `DirWatcher` polls via `Path.walk`, pruning `SpecialDirs` instead of descending into
   them (they grow to the size of the library). A file is ready once its size and mtime are unchanged since the previous
   scan — never sleep per file. The special directory *names* are pruned at any depth, so nested locations do not
-  process each other's outputs. `get_new_file()` opens an attempt and `finish(file, failed)` closes it — always pair
-  them (`Service._process_next` does so in a `finally`, which a stop signal reaches too). An attempt left open means
-  the service died; after `MAX_ATTEMPTS` of those the file counts as failed. Failed files are persisted and skipped
-  until they change or `retry_failed()` is called (config or override reload). `pause()` holds a location back for
-  `PAUSE_SECONDS` without failing anything.
+  process each other's outputs. `scan()` returns the ready files — not failed, not running — alphabetically by their
+  relative path, compared a folder at a time. `slot_of()` probes a file once per version and config. `begin(file)`
+  opens an attempt and `finish(file, failed)` or `abandon(file)` ends it — always pair them (`Service._settle`, also
+  on a stop). An attempt left open (`abandon`, or the service died) counts; after `MAX_ATTEMPTS` the file counts as
+  failed. Failed files are persisted and skipped until they change or `retry_failed()` is called (config or override
+  reload). `pause()` holds a location back for `PAUSE_SECONDS` without failing anything. Not thread-safe, it needs
+  none: the jobs run in other processes.
 
 **`baycone_cli` — the `baycone-cli` command.** `argparse` flags become `EncodingSettings` and a `Job`, then the core
 `Encoder` runs. Its default work dir is `.baycone/cli/` next to the input and only that is removed:
@@ -146,8 +166,8 @@ hidden temp file next to the output, fsyncs it and renames it. Keep the order en
 publish → subtitles, then archive in the service. The source's signature is taken before the analysis and compared
 before publishing; a changed or deleted source discards the result. `archive_original()` never overwrites
 (`_free_path`). Everything under `.baycone/` except `state.json` and `config.override.yml` is disposable:
-`Job.clear_workdirs()` runs after every file and `SpecialDirs.clear_workdirs()` when a `DirWatcher` is created
-(startup, config reload — never during an encode).
+`Job.clear_workdirs()` runs after every file and `SpecialDirs.clear_workdirs()` (both slots' work dirs) when a
+`DirWatcher` is created: at startup, or for a location a config reload adds — never for a location with a job running.
 
 **First-pass resume.** The passlog is *not* part of `clear_workdirs()`. `_first_pass()` fsyncs the stats and then
 writes `passlogfiles/pass1.json` (source signature + the exact first-pass command); `_encode()` skips the first pass
@@ -165,7 +185,8 @@ run is watched by `_kill_when_stalled()`: alive means `out_time_us` or the outpu
 **Directory pruning** (`_remove_empty_dirs`) walks up with `rmdir()`, which only ever succeeds on empty directories.
 Never `rmtree` anything under the watch root — sibling media files may not be processed yet.
 
-**Logging** is configured only by `setup_logging()` in `service/baycone_service/logger.py` (called from `main()`) and by the
+**Logging** is configured only by `setup_logging()` in `service/baycone_service/logger.py` (called from `main()`, and from
+`run_job()` in each job process, its records tagged `[encode]` / `[copy]`) and by the
 CLI's `main()` — importing a module must not configure logging. The core logs plan and step results at INFO and the
 10 % progress lines at DEBUG.
 

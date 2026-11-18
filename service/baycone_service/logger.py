@@ -1,4 +1,5 @@
 import logging.config
+from copy import deepcopy
 
 LOGGING_CONFIG = {
     "version": 1,
@@ -29,5 +30,14 @@ LOGGING_CONFIG = {
 }
 
 
-def setup_logging() -> None:
-    logging.config.dictConfig(LOGGING_CONFIG)
+def setup_logging(name: str | None = None) -> None:
+    """
+    Configures the root logger.
+
+    :param name: tags every record, telling apart the jobs that log at the same time
+    """
+    logging_config = deepcopy(LOGGING_CONFIG)
+    if name:
+        colored = logging_config["formatters"]["colored"]
+        colored["format"] = colored["format"].replace("[%(levelname)s]", f"[%(levelname)s] [{name}]")
+    logging.config.dictConfig(logging_config)

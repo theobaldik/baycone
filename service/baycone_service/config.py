@@ -18,6 +18,8 @@ class Constants:
     DIR_PASSLOG = DIR_TEMP / Job.PASSLOG_DIR
     DIR_ENCODED = DIR_TEMP / Job.ENCODED_DIR
     DIR_OPTIMIZED = DIR_TEMP / Job.OPTIMIZED_DIR
+    # The work dir of the copy slot, so its files never mix with those of the encode running alongside
+    DIR_COPY = DIR_TEMP / "copy"
     DIR_ORIGINALS = Path("_baycone_originals")
     DIR_PROCESSED = Path("_baycone_processed")
 
@@ -70,6 +72,11 @@ class SpecialDirs:
         return self._root_dir / Constants.DIR_OPTIMIZED
 
     @property
+    def copy_dir(self) -> Path:
+        """Work dir of the copy slot, holding its own `encoded` and `optimized` folders; created on demand."""
+        return self._root_dir / Constants.DIR_COPY
+
+    @property
     def state_file(self) -> Path:
         return self._root_dir / Constants.FILE_STATE
 
@@ -97,6 +104,7 @@ class SpecialDirs:
         """The passlog is not part of it: a finished first pass outlives an interrupted run."""
         self._clear(self.encoded_dir)
         self._clear(self.optimized_dir)
+        shutil.rmtree(self.copy_dir, ignore_errors=True)
 
     def clear_passlog(self) -> None:
         self._clear(self.passlog_dir)

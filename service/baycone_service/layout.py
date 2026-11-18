@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from baycone.encoding import Job
@@ -7,6 +8,13 @@ from baycone.files import fsync_dir
 from baycone_service.config import LocationConfig, SpecialDirs, config
 
 log = logging.getLogger(__name__)
+
+
+class Slot(StrEnum):
+    """What a file takes while it is processed: at most one file per slot runs at a time."""
+
+    ENCODE = "encode"  # the video is encoded
+    COPY = "copy"  # the video is copied: a remux, maybe with the audio encoded
 
 
 @dataclass
@@ -36,11 +44,12 @@ class LocatedFile:
     def processed_path(self) -> Path:
         return self.special_dirs.processed_dir / self.relative_path.with_suffix(self.location_config.target_extension)
 
-    def job(self) -> Job:
+    def job(self, slot: Slot = Slot.ENCODE) -> Job:
+        # The encode slot works right in `.baycone`, where its first pass is kept for a resume
         return Job(
             input_file=self.file_path,
             output_file=self.processed_path,
-            work_dir=self.special_dirs.temp_dir,
+            work_dir=self.special_dirs.temp_dir if slot is Slot.ENCODE else self.special_dirs.copy_dir,
             name=self.relative_path.as_posix(),
         )
 

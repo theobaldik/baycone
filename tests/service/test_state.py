@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baycone_service.state import State
+from baycone_service.state import Attempt, State
 
 
 @pytest.fixture
@@ -19,12 +19,26 @@ class TestState:
     def test_roundtrip(self, state_file):
         state = State(
             failed={"Show/episode.mkv": (1000, 1_700_000_000_000_000_000)},
-            current="movie.mkv",
-            current_signature=(2000, 1_700_000_000_000_000_001),
-            attempts=2,
+            in_progress={
+                "movie.mkv": Attempt((2000, 1_700_000_000_000_000_001), attempts=2),
+                "Show/other.mkv": Attempt((3000, 1_700_000_000_000_000_002)),
+            },
         )
         state.save(state_file)
         assert State.load(state_file) == state
+
+    def test_file_in_progress_before_0_8_keeps_its_attempts(self, state_file):
+        """One file at a time used to be recorded on its own; an upgrade must not reset its count."""
+        state_file.write_text(
+            json.dumps({"failed": {}, "current": "movie.mkv", "current_signature": [2000, 7], "attempts": 2})
+        )
+        assert State.load(state_file) == State(in_progress={"movie.mkv": Attempt((2000, 7), attempts=2)})
+
+    def test_nothing_in_progress_before_0_8(self, state_file):
+        state_file.write_text(
+            json.dumps({"failed": {"a.mkv": [1, 2]}, "current": "", "current_signature": None, "attempts": 0})
+        )
+        assert State.load(state_file) == State(failed={"a.mkv": (1, 2)})
 
     def test_roundtrip_without_a_current_file(self, state_file):
         State(failed={"movie.mkv": (1, 2)}).save(state_file)
@@ -42,10 +56,10 @@ class TestState:
 
     def test_save_replaces_the_file_in_one_step(self, state_file):
         """A power loss mid-save must leave the previous state, not half of the new one."""
-        State(attempts=1).save(state_file)
+        State(failed={"a.mkv": (1, 2)}).save(state_file)
         with patch("baycone.files.Path.replace", side_effect=OSError("power loss")):
-            State(attempts=2).save(state_file)
-        assert json.loads(state_file.read_text())["attempts"] == 1
+            State(failed={"b.mkv": (3, 4)}).save(state_file)
+        assert list(json.loads(state_file.read_text())["failed"]) == ["a.mkv"]
 
     def test_failed_save_only_warns(self, tmp_path, caplog):
         State().save(tmp_path / "missing" / "state.json")

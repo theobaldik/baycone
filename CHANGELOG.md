@@ -7,12 +7,16 @@
 - **Breaking:** Exit `baycone-cli` with `1` when the file could not be processed and with `2` on any invalid
   argument, the other way round than before
 - Report `FileInfo.duration` in seconds with their fraction instead of whole seconds
+- Process the files of a location alphabetically by their path instead of in the filesystem's order
+- Keep every file in progress in `.baycone/state.json`; older versions read the new file as empty and forget its
+  failed files
 
 ### Added
 
 - Add `Job.start` and `Job.end` to cut a video while it is processed, frame-accurately when the video is encoded
 - Add the `force_video_encode` setting to encode the video even when it is within every limit
 - Add `--start`, `--end` and `--force-video-encode` to `baycone-cli`
+- Remux files, and encode the audio of files whose video is copied, while another file's video is being encoded
 
 ### Fixed
 

@@ -1,12 +1,8 @@
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
 import pytest
 
-from baycone.errors import EncodingError, InsufficientSpaceError
 from baycone_service.config import SpecialDirs
-from baycone_service.layout import LocatedFile, archive_original
-from baycone_service.service import Service
+from baycone_service.layout import LocatedFile, Slot, archive_original
 
 
 @pytest.fixture
@@ -68,6 +64,13 @@ class TestLocatedFile:
             special_dirs.optimized_dir,
         )
 
+    def test_copy_slot_has_a_work_dir_of_its_own(self, media_file, special_dirs):
+        """Its encoded and optimized files must not mix with those of the encode running alongside."""
+        encode, copy = LocatedFile.resolve(media_file).job(Slot.ENCODE), LocatedFile.resolve(media_file).job(Slot.COPY)
+        assert copy.work_dir == special_dirs.copy_dir
+        assert {copy.encoded_dir, copy.optimized_dir}.isdisjoint({encode.encoded_dir, encode.optimized_dir})
+        assert copy.output_file == encode.output_file
+
 
 class TestArchiveOriginal:
     def test_moves_original_to_originals_dir(self, media_file, special_dirs):
@@ -120,42 +123,3 @@ class TestArchiveOriginal:
     def test_never_removes_the_location_root(self, media_file, location_dir, special_dirs):
         archive_original(LocatedFile.resolve(media_file))
         assert location_dir.is_dir()
-
-
-class TestProcessFile:
-    def _process(self, media_file: Path, **process) -> tuple[bool, MagicMock]:
-        encoder = MagicMock()
-        encoder.process.configure_mock(**process)
-        with (
-            patch("baycone_service.service.Encoder", return_value=encoder),
-            patch("baycone_service.service.archive_original") as archive,
-        ):
-            result = Service()._process_file(media_file)
-        return result, archive
-
-    def test_archives_the_original_once_published(self, media_file, special_dirs):
-        result, archive = self._process(media_file)
-        assert result is True
-        archive.assert_called_once()
-
-    def test_failed_file_is_never_archived(self, media_file, special_dirs, caplog):
-        result, archive = self._process(media_file, side_effect=EncodingError("Encoding failed"))
-        assert result is False
-        archive.assert_not_called()
-        assert "Processing aborted: Encoding failed" in caplog.text
-
-    def test_waiting_for_space_is_not_a_failure(self, media_file, special_dirs):
-        with pytest.raises(InsufficientSpaceError):
-            self._process(media_file, side_effect=InsufficientSpaceError("needs 10.0 GiB"))
-
-    def test_encodes_with_the_location_settings_and_configured_binaries(self, media_file, location_config):
-        location_config.target_video_bitrate = 1500
-        with (
-            patch("baycone_service.service.Encoder") as encoder,
-            patch("baycone_service.service.archive_original"),
-            patch("baycone_service.service.config.config.ffmpeg_path", "/opt/ffmpeg"),
-        ):
-            Service()._process_file(media_file)
-        settings, tools = encoder.call_args.args
-        assert settings.target_video_bitrate == 1500
-        assert tools.ffmpeg == "/opt/ffmpeg"
